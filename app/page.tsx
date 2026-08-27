@@ -98,7 +98,33 @@ const sectionOrder: { key: string; label: string; filter: (event: TracEvent) => 
     label: '不重要不紧急的待办',
     filter: (event) => event.type === 'todo' && event.matrix === 'later' && !event.completed,
   },
-  { key: 'habit', label: '习惯', filter: (event) => event.type === 'habit' },
+  { key: 'habit', label: '习惯', filter: (event) => event.type === 'habit' && !event.completed },
+];
+
+const editableSectionOrder: { key: string; label: string; filter: (event: TracEvent) => boolean }[] = [
+  { key: 'daily', label: '日常', filter: (event) => event.type === 'daily' && !event.completed },
+  {
+    key: 'important-urgent',
+    label: '重要紧急的待办',
+    filter: (event) => event.type === 'todo' && event.matrix === 'important-urgent' && !event.completed,
+  },
+  {
+    key: 'urgent',
+    label: '不重要紧急的待办',
+    filter: (event) => event.type === 'todo' && event.matrix === 'urgent' && !event.completed,
+  },
+  {
+    key: 'important',
+    label: '重要不紧急的待办',
+    filter: (event) => event.type === 'todo' && event.matrix === 'important' && !event.completed,
+  },
+  {
+    key: 'later',
+    label: '不重要不紧急的待办',
+    filter: (event) => event.type === 'todo' && event.matrix === 'later' && !event.completed,
+  },
+  { key: 'habit', label: '习惯', filter: (event) => event.type === 'habit' && !event.completed },
+  { key: 'completed', label: '已完成', filter: (event) => Boolean(event.completed) },
 ];
 
 const defaultCategories = ['默认', '学习', '作业', '预习', '健康', '习惯'];
@@ -393,8 +419,8 @@ export default function Home() {
         return {
           ...event,
           totalMs: event.totalMs + durationMs,
-          completed: event.type === 'todo' && completed ? true : event.completed,
-          completedAt: event.type === 'todo' && completed ? endAt.toISOString() : event.completedAt,
+          completed: event.type !== 'daily' && completed ? true : event.completed,
+          completedAt: event.type !== 'daily' && completed ? endAt.toISOString() : event.completedAt,
           metricRecords:
             event.type === 'habit' && event.hasMetric && metric !== undefined
               ? [...event.metricRecords, { value: metric, at: endAt.toISOString() }]
@@ -517,7 +543,7 @@ export default function Home() {
     setEventModalOpen(false);
   }
 
-  function toggleTodoDone(eventId: string) {
+  function toggleEventDone(eventId: string) {
     setEvents((current) =>
       current.map((event) =>
         event.id === eventId
@@ -525,6 +551,19 @@ export default function Home() {
           : event,
       ),
     );
+  }
+
+  function deleteEvent(eventId: string) {
+    setEvents((current) => current.filter((event) => event.id !== eventId));
+    setSegments((current) => current.filter((segment) => segment.eventId !== eventId));
+    if (activeEventId === eventId) {
+      setActiveEventId(null);
+      setActiveStartedAt(null);
+    }
+    if (editingId === eventId) {
+      setEventModalOpen(false);
+      setEditingId(null);
+    }
   }
 
   function reorder(targetId: string) {
@@ -595,7 +634,8 @@ export default function Home() {
           onEdit={openEditEvent}
           onEditCategories={() => { setListModal('category'); setListInput(''); }}
           onEditTags={() => { setListModal('tag'); setListInput(''); }}
-          onToggleDone={toggleTodoDone}
+          onToggleDone={toggleEventDone}
+          onDelete={deleteEvent}
           draggingId={draggingId}
           setDraggingId={setDraggingId}
           reorder={reorder}
@@ -645,6 +685,7 @@ export default function Home() {
         categories={categories}
         tags={tags}
         onSubmit={saveEvent}
+        onDelete={editingId ? () => deleteEvent(editingId) : undefined}
         onClose={() => setEventModalOpen(false)}
       />
 
@@ -704,34 +745,96 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, 
           </div>
           <span className="live-dot">今天</span>
         </div>
-        <div className="timeline-list">
-          {activeEvent && (
-            <article className="timeline-item active">
-              <span className="rail-dot" />
-              <div>
-                <time>{formatClock(activeStartedAt || new Date())} - 现在</time>
-                <h3>{activeEvent.name}</h3>
-                <p>已进行 {formatDuration(elapsedMs)}</p>
-              </div>
-            </article>
-          )}
-          {segments.length === 0 && !activeEvent ? <p className="empty">今天还没有轨迹。</p> : segments.map((segment) => (
-            <article className="timeline-item" key={segment.id}>
-              <span className="rail-dot" />
-              <div>
-                <time>{formatClock(segment.start)} - {formatClock(segment.end)}</time>
-                <h3>{segment.eventName}</h3>
-                <p>{typeMeta[segment.eventType].label} · {formatDuration(segment.durationMs)}</p>
-              </div>
-            </article>
-          ))}
-        </div>
+        <DayTimeline activeEvent={activeEvent} activeStartedAt={activeStartedAt} elapsedMs={elapsedMs} segments={segments} />
       </section>
     </div>
   );
 }
 
-function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, onEditTags, onToggleDone, draggingId, setDraggingId, reorder }: {
+function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments }: {
+  activeEvent: TracEvent | null;
+  activeStartedAt: string | null;
+  elapsedMs: number;
+  segments: Segment[];
+}) {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+  const now = new Date();
+  const currentMs = Math.min(dayEnd.getTime(), Math.max(dayStart.getTime(), now.getTime()));
+  const dayMs = dayEnd.getTime() - dayStart.getTime();
+  const todaySegments = [...segments].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+
+  const intervals = [
+    ...todaySegments.map((segment) => ({
+      id: segment.id,
+      eventName: segment.eventName,
+      eventType: segment.eventType,
+      start: new Date(segment.start),
+      end: new Date(segment.end),
+      durationMs: segment.durationMs,
+      active: false,
+    })),
+    ...(activeEvent && activeStartedAt
+      ? [{
+          id: 'active',
+          eventName: activeEvent.name,
+          eventType: activeEvent.type,
+          start: new Date(activeStartedAt),
+          end: now,
+          durationMs: elapsedMs,
+          active: true,
+        }]
+      : []),
+  ].filter((item) => item.start >= dayStart && item.start < dayEnd);
+
+  const markers = [
+    ...intervals.flatMap((item) => [item.start, item.end]),
+    now,
+  ]
+    .filter((date) => date >= dayStart && date <= dayEnd)
+    .map((date) => date.getTime());
+  const uniqueMarkers = Array.from(new Set(markers)).sort((a, b) => a - b);
+
+  function topFor(date: Date | number) {
+    const time = typeof date === 'number' ? date : date.getTime();
+    return `${((time - dayStart.getTime()) / dayMs) * 100}%`;
+  }
+
+  return (
+    <div className="day-timeline">
+      <div className="time-labels" aria-hidden="true">
+        <span>00:00</span>
+        <span>12:00</span>
+        <span>24:00</span>
+      </div>
+      <div className="day-axis" aria-hidden="true">
+        {uniqueMarkers.map((time) => (
+          <span
+            className={`day-dot ${Math.abs(time - currentMs) < 1000 ? 'now' : ''}`}
+            key={time}
+            style={{ top: topFor(time) }}
+          />
+        ))}
+      </div>
+      <div className="day-events">
+        {intervals.length === 0 ? <p className="empty">今天还没有轨迹。</p> : intervals.map((item) => {
+          const midpoint = (item.start.getTime() + item.end.getTime()) / 2;
+          return (
+            <article className={`day-event ${item.active ? 'active' : ''}`} key={item.id} style={{ top: topFor(midpoint) }}>
+              <time>{formatClock(item.start)} - {item.active ? '现在' : formatClock(item.end)}</time>
+              <h3>{item.eventName}</h3>
+              <p>{typeMeta[item.eventType].label} · {formatDuration(item.durationMs)}</p>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, onEditTags, onToggleDone, onDelete, draggingId, setDraggingId, reorder }: {
   events: TracEvent[];
   activeEventId: string | null;
   onAdd: () => void;
@@ -739,6 +842,7 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, on
   onEditCategories: () => void;
   onEditTags: () => void;
   onToggleDone: (id: string) => void;
+  onDelete: (id: string) => void;
   draggingId: string | null;
   setDraggingId: (id: string | null) => void;
   reorder: (targetId: string) => void;
@@ -758,7 +862,7 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, on
           </div>
         </div>
         <div className="event-sections">
-          {sectionOrder.map((section) => {
+          {editableSectionOrder.map((section) => {
             const items = events.filter(section.filter);
             return (
               <div className="event-section" key={section.key}>
@@ -783,14 +887,17 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, on
                             {event.tags.length ? ` · ${event.tags.join(' / ')}` : ''}
                           </small>
                         </span>
-                        {event.type === 'todo' && (
-                          <label className="mini-check">
-                            <input type="checkbox" checked={Boolean(event.completed)} onChange={() => onToggleDone(event.id)} />
-                            完成
-                          </label>
+                        {event.type !== 'daily' && (
+                          <button className={`complete-action ${event.completed ? 'done' : ''}`} onClick={() => onToggleDone(event.id)} aria-label={`${event.completed ? '取消完成' : '完成'} ${event.name}`}>
+                            <span className="material-symbols-outlined" aria-hidden="true">{event.completed ? 'check_circle' : 'radio_button_unchecked'}</span>
+                            <span>{event.completed ? '已完成' : '完成'}</span>
+                          </button>
                         )}
-                        <button className="icon-only" onClick={() => onEdit(event)} aria-label={`编辑 ${event.name}`}>
+                        <button className="icon-only event-tool" onClick={() => onEdit(event)} aria-label={`编辑 ${event.name}`}>
                           <span className="material-symbols-outlined" aria-hidden="true">edit</span>
+                        </button>
+                        <button className="icon-only event-tool danger" onClick={() => onDelete(event.id)} aria-label={`删除 ${event.name}`}>
+                          <span className="material-symbols-outlined" aria-hidden="true">delete</span>
                         </button>
                       </article>
                     ))}
@@ -895,7 +1002,7 @@ function SwitchModal({ open, events, activeEventId, onPick, onGoodNight, onClose
   );
 }
 
-function EventEditorModal({ open, draft, setDraft, editing, categories, tags, onSubmit, onClose }: {
+function EventEditorModal({ open, draft, setDraft, editing, categories, tags, onSubmit, onDelete, onClose }: {
   open: boolean;
   draft: EventDraft;
   setDraft: (draft: EventDraft) => void;
@@ -903,6 +1010,7 @@ function EventEditorModal({ open, draft, setDraft, editing, categories, tags, on
   categories: string[];
   tags: string[];
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onDelete?: () => void;
   onClose: () => void;
 }) {
   function toggleTag(tag: string) {
@@ -978,6 +1086,12 @@ function EventEditorModal({ open, draft, setDraft, editing, categories, tags, on
           </>
         )}
         <div className="dialog-actions">
+          {editing && onDelete && (
+            <button className="secondary-button danger" type="button" onClick={onDelete}>
+              <span className="material-symbols-outlined" aria-hidden="true">delete</span>
+              删除
+            </button>
+          )}
           <button className="secondary-button" type="button" onClick={onClose}>取消</button>
           <button className="primary-button inline" type="submit">保存</button>
         </div>
