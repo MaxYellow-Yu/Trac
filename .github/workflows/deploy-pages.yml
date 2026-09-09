@@ -35,6 +35,12 @@ jobs:
         env:
           GITHUB_PAGES: 'true'
 
+      - name: Prepare Pages artifact
+        run: |
+          mv dist/client/Trac/_next dist/client/_next
+          rmdir dist/client/Trac
+          touch dist/client/.nojekyll
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
