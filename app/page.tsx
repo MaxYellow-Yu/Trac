@@ -62,6 +62,8 @@ type PersistedState = {
 
 const STORAGE_KEY = 'trac-campus-life-state-v2';
 const LEGACY_STORAGE_KEY = 'trac-campus-life-state-v1';
+const SEED_TIMELINE_MIGRATION_KEY = 'trac-seed-timeline-cleared-v1';
+const seedSegmentIds = new Set(['seg-1', 'seg-2', 'seg-3']);
 
 const typeMeta: Record<EventType, { label: string; icon: string }> = {
   daily: { label: '日常', icon: 'routine' },
@@ -184,37 +186,6 @@ const seedEvents: TracEvent[] = [
     metricPrompt: '跑了多少公里？',
     totalMs: 46 * 60 * 1000,
     metricRecords: [{ value: 3.2, at: new Date(Date.now() - 2 * 86400000).toISOString() }],
-  },
-];
-
-const now = new Date();
-const seedSegments: Segment[] = [
-  {
-    id: 'seg-1',
-    eventId: 'daily-breakfast',
-    eventName: '早餐与通勤',
-    eventType: 'daily',
-    start: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 35).toISOString(),
-    end: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 8, 17).toISOString(),
-    durationMs: 42 * 60 * 1000,
-  },
-  {
-    id: 'seg-2',
-    eventId: 'todo-calculus',
-    eventName: '微积分习题集',
-    eventType: 'todo',
-    start: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 5).toISOString(),
-    end: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 10, 31).toISOString(),
-    durationMs: 86 * 60 * 1000,
-  },
-  {
-    id: 'seg-3',
-    eventId: 'habit-words',
-    eventName: '背单词',
-    eventType: 'habit',
-    start: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 18).toISOString(),
-    end: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 49).toISOString(),
-    durationMs: 31 * 60 * 1000,
   },
 ];
 
@@ -400,11 +371,11 @@ function eventToDraft(event: TracEvent): EventDraft {
 export default function Home() {
   const [page, setPage] = useState<AppPage>('record');
   const [events, setEvents] = useState<TracEvent[]>(seedEvents);
-  const [segments, setSegments] = useState<Segment[]>(seedSegments);
+  const [segments, setSegments] = useState<Segment[]>([]);
   const [categories, setCategories] = useState<string[]>(defaultCategories);
   const [tags, setTags] = useState<string[]>(defaultTags);
-  const [activeEventId, setActiveEventId] = useState<string | null>('todo-english');
-  const [activeStartedAt, setActiveStartedAt] = useState<string | null>(new Date(Date.now() - 17 * 60000).toISOString());
+  const [activeEventId, setActiveEventId] = useState<string | null>(null);
+  const [activeStartedAt, setActiveStartedAt] = useState<string | null>(null);
   const [period, setPeriod] = useState<Period>('day');
   const [trendMode, setTrendMode] = useState<TrendMode>('event');
   const [tick, setTick] = useState(Date.now());
@@ -425,17 +396,21 @@ export default function Home() {
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved) as PersistedState;
+      const shouldClearSeedTimeline = !localStorage.getItem(SEED_TIMELINE_MIGRATION_KEY);
+      const savedSegments = parsed.segments || [];
+      const hadSeedTimeline = savedSegments.some((segment) => seedSegmentIds.has(segment.id));
       const savedEvents = (parsed.events?.length ? parsed.events : seedEvents).map((event) => ({
         ...event,
         importance: getEventImportance(event),
       }));
       setEvents(savedEvents);
-      setSegments(parsed.segments || []);
-      setActiveEventId(parsed.activeEventId ?? null);
-      setActiveStartedAt(parsed.activeStartedAt ?? null);
+      setSegments(shouldClearSeedTimeline ? savedSegments.filter((segment) => !seedSegmentIds.has(segment.id)) : savedSegments);
+      setActiveEventId(shouldClearSeedTimeline && hadSeedTimeline ? null : parsed.activeEventId ?? null);
+      setActiveStartedAt(shouldClearSeedTimeline && hadSeedTimeline ? null : parsed.activeStartedAt ?? null);
       setTrendMode(parsed.trendMode || 'event');
       setCategories(parsed.categories?.length ? parsed.categories : deriveCategories(savedEvents));
       setTags(parsed.tags?.length ? parsed.tags : deriveTags(savedEvents));
+      if (shouldClearSeedTimeline) localStorage.setItem(SEED_TIMELINE_MIGRATION_KEY, '1');
     } catch {
       localStorage.removeItem(STORAGE_KEY);
     }
