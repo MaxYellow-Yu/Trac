@@ -4,15 +4,18 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 
 type AppPage = 'record' | 'events' | 'stats';
 type EventType = 'daily' | 'todo' | 'habit';
-type Matrix = 'important-urgent' | 'urgent' | 'important' | 'later';
+type LegacyMatrix = 'important-urgent' | 'urgent' | 'important' | 'later';
+type Importance = 'important' | 'unimportant';
 type Period = 'day' | 'week' | 'month';
-type ChartMode = 'line' | 'heatmap';
+type TrendMode = 'workload' | 'event' | 'tag' | 'category' | 'habit';
+type TrendSeries = { label: string; color: string; values: number[] };
 type EventDraft = {
   type: EventType;
   name: string;
   tags: string[];
   category: string;
-  matrix: Matrix;
+  importance: Importance;
+  deadline: string;
   workload: number;
   hasMetric: boolean;
   metricPrompt: string;
@@ -24,7 +27,9 @@ type TracEvent = {
   name: string;
   tags: string[];
   category: string;
-  matrix?: Matrix;
+  importance?: Importance;
+  deadline?: string;
+  matrix?: LegacyMatrix;
   workload?: number;
   hasMetric?: boolean;
   metricPrompt?: string;
@@ -49,7 +54,8 @@ type PersistedState = {
   segments: Segment[];
   activeEventId: string | null;
   activeStartedAt: string | null;
-  chartMode: ChartMode;
+  trendMode?: TrendMode;
+  chartMode?: 'line' | 'heatmap';
   categories?: string[];
   tags?: string[];
 };
@@ -63,13 +69,6 @@ const typeMeta: Record<EventType, { label: string; icon: string }> = {
   habit: { label: '习惯', icon: 'self_improvement' },
 };
 
-const matrixMeta: Record<Matrix, { label: string; short: string }> = {
-  'important-urgent': { label: '重要紧急', short: 'IU' },
-  urgent: { label: '不重要紧急', short: 'U' },
-  important: { label: '重要不紧急', short: 'I' },
-  later: { label: '不重要不紧急', short: 'L' },
-};
-
 const pageMeta: Record<AppPage, { label: string; icon: string }> = {
   record: { label: '时间记录', icon: 'timer' },
   events: { label: '事件编辑', icon: 'edit_note' },
@@ -81,24 +80,24 @@ const sectionOrder: { key: string; label: string; filter: (event: TracEvent) => 
   {
     key: 'important-urgent',
     label: '重要紧急的待办',
-    filter: (event) => event.type === 'todo' && event.matrix === 'important-urgent' && !event.completed,
+    filter: (event) => event.type === 'todo' && getEventImportance(event) === 'important' && isUrgentDeadline(event.deadline) && !event.completed,
   },
   {
     key: 'urgent',
     label: '不重要紧急的待办',
-    filter: (event) => event.type === 'todo' && event.matrix === 'urgent' && !event.completed,
+    filter: (event) => event.type === 'todo' && getEventImportance(event) === 'unimportant' && isUrgentDeadline(event.deadline) && !event.completed,
   },
   {
     key: 'important',
     label: '重要不紧急的待办',
-    filter: (event) => event.type === 'todo' && event.matrix === 'important' && !event.completed,
+    filter: (event) => event.type === 'todo' && getEventImportance(event) === 'important' && !isUrgentDeadline(event.deadline) && !event.completed,
   },
   {
     key: 'later',
     label: '不重要不紧急的待办',
-    filter: (event) => event.type === 'todo' && event.matrix === 'later' && !event.completed,
+    filter: (event) => event.type === 'todo' && getEventImportance(event) === 'unimportant' && !isUrgentDeadline(event.deadline) && !event.completed,
   },
-  { key: 'habit', label: '习惯', filter: (event) => event.type === 'habit' && !event.completed },
+  { key: 'habit', label: '习惯', filter: (event) => event.type === 'habit' },
 ];
 
 const editableSectionOrder: { key: string; label: string; filter: (event: TracEvent) => boolean }[] = [
@@ -106,25 +105,25 @@ const editableSectionOrder: { key: string; label: string; filter: (event: TracEv
   {
     key: 'important-urgent',
     label: '重要紧急的待办',
-    filter: (event) => event.type === 'todo' && event.matrix === 'important-urgent' && !event.completed,
+    filter: (event) => event.type === 'todo' && getEventImportance(event) === 'important' && isUrgentDeadline(event.deadline) && !event.completed,
   },
   {
     key: 'urgent',
     label: '不重要紧急的待办',
-    filter: (event) => event.type === 'todo' && event.matrix === 'urgent' && !event.completed,
+    filter: (event) => event.type === 'todo' && getEventImportance(event) === 'unimportant' && isUrgentDeadline(event.deadline) && !event.completed,
   },
   {
     key: 'important',
     label: '重要不紧急的待办',
-    filter: (event) => event.type === 'todo' && event.matrix === 'important' && !event.completed,
+    filter: (event) => event.type === 'todo' && getEventImportance(event) === 'important' && !isUrgentDeadline(event.deadline) && !event.completed,
   },
   {
     key: 'later',
     label: '不重要不紧急的待办',
-    filter: (event) => event.type === 'todo' && event.matrix === 'later' && !event.completed,
+    filter: (event) => event.type === 'todo' && getEventImportance(event) === 'unimportant' && !isUrgentDeadline(event.deadline) && !event.completed,
   },
-  { key: 'habit', label: '习惯', filter: (event) => event.type === 'habit' && !event.completed },
-  { key: 'completed', label: '已完成', filter: (event) => Boolean(event.completed) },
+  { key: 'habit', label: '习惯', filter: (event) => event.type === 'habit' },
+  { key: 'completed', label: '今日已完成', filter: (event) => event.type === 'todo' && Boolean(event.completed && event.completedAt && isToday(event.completedAt)) },
 ];
 
 const defaultCategories = ['默认', '学习', '作业', '预习', '健康', '习惯'];
@@ -146,7 +145,8 @@ const seedEvents: TracEvent[] = [
     name: '微积分习题集',
     tags: ['微积分', '作业'],
     category: '学习',
-    matrix: 'important-urgent',
+    importance: 'important',
+    deadline: dateInputValue(new Date(Date.now() + 3 * 86400000)),
     workload: 4,
     totalMs: 86 * 60 * 1000,
     metricRecords: [],
@@ -157,7 +157,8 @@ const seedEvents: TracEvent[] = [
     name: '英语展示准备',
     tags: ['英语', '演讲'],
     category: '预习',
-    matrix: 'important',
+    importance: 'important',
+    deadline: dateInputValue(new Date(Date.now() + 12 * 86400000)),
     workload: 3,
     totalMs: 28 * 60 * 1000,
     metricRecords: [],
@@ -222,7 +223,8 @@ const emptyDraft: EventDraft = {
   name: '',
   tags: [],
   category: '默认',
-  matrix: 'important-urgent',
+  importance: 'important',
+  deadline: '',
   workload: 3,
   hasMetric: false,
   metricPrompt: '',
@@ -238,6 +240,42 @@ function formatDuration(ms: number) {
 
 function formatClock(date: string | Date) {
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(date));
+}
+
+function dateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateLabel(date: string | Date) {
+  return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(new Date(date));
+}
+
+function getEventImportance(event: TracEvent): Importance {
+  if (event.importance) return event.importance;
+  return event.matrix === 'important-urgent' || event.matrix === 'important' ? 'important' : 'unimportant';
+}
+
+function isUrgentDeadline(deadline?: string) {
+  if (!deadline) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(`${deadline}T00:00:00`);
+  return Number.isFinite(target.getTime()) && target.getTime() - today.getTime() <= 7 * 86400000;
+}
+
+function eventMetaLine(event: TracEvent) {
+  if (event.type === 'todo') {
+    return [
+      event.deadline ? `DDL ${formatDateLabel(`${event.deadline}T00:00:00`)}` : '',
+      `工作量 ${event.workload || 0}`,
+      event.category || '默认',
+      ...(event.tags || []),
+    ].filter(Boolean).join(' · ');
+  }
+  return [event.category || '默认', ...(event.tags || [])].filter(Boolean).join(' · ');
 }
 
 function makeId(prefix: string) {
@@ -259,18 +297,17 @@ function deriveTags(events: TracEvent[]) {
 function startOfPeriod(date: Date, period: Period) {
   const copy = new Date(date);
   copy.setHours(0, 0, 0, 0);
-  if (period === 'week') {
-    const day = copy.getDay() || 7;
-    copy.setDate(copy.getDate() - day + 1);
-  }
-  if (period === 'month') {
-    copy.setDate(1);
-  }
+  if (period === 'week') copy.setDate(copy.getDate() - 6);
+  if (period === 'month') copy.setDate(copy.getDate() - 29);
   return copy;
 }
 
 function inPeriod(date: string, period: Period) {
-  return new Date(date) >= startOfPeriod(new Date(), period);
+  const target = new Date(date);
+  const tomorrow = new Date();
+  tomorrow.setHours(0, 0, 0, 0);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return target >= startOfPeriod(new Date(), period) && target < tomorrow;
 }
 
 function isToday(date: string) {
@@ -288,17 +325,62 @@ function groupTotal<T extends string>(entries: { keys: T[]; ms: number }[]) {
   }, {} as Record<T, number>);
 }
 
-function miniSeries(segments: Segment[], period: Period) {
-  const count = period === 'day' ? 8 : period === 'week' ? 7 : 12;
-  return Array.from({ length: count }, (_, index) => {
-    const relevant = segments.filter((segment) => {
-      const segmentDate = new Date(segment.start);
-      if (period === 'day') return Math.floor(segmentDate.getHours() / 3) === index;
-      if (period === 'week') return (segmentDate.getDay() + 6) % 7 === index;
-      return Math.floor((segmentDate.getDate() - 1) / 3) === index;
-    });
-    return Math.round(relevant.reduce((sum, segment) => sum + segment.durationMs, 0) / 60000);
+const trendColors = ['#4f46e5', '#059669', '#d97706', '#e11d48', '#0891b2', '#7c3aed', '#65a30d', '#ea580c', '#0f766e', '#be123c'];
+
+function buildTrendSeries(period: Period, mode: TrendMode, segments: Segment[], events: TracEvent[]) {
+  if (period === 'day') return { labels: [] as string[], dateKeys: [] as string[], series: [] as TrendSeries[] };
+  const count = period === 'week' ? 7 : 30;
+  const dates = Array.from({ length: count }, (_, index) => {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() - (count - 1 - index));
+    return date;
   });
+  const labels = dates.map((date) => formatDateLabel(date));
+  const dateKeys = dates.map(dateInputValue);
+  const eventLookup = new Map(events.map((event) => [event.id, event]));
+  const valuesByLabel = new Map<string, number[]>();
+
+  function ensure(label: string) {
+    if (!valuesByLabel.has(label)) valuesByLabel.set(label, Array(count).fill(0));
+  }
+
+  function add(label: string, dateKey: string, value: number) {
+    const index = dateKeys.indexOf(dateKey);
+    if (index < 0) return;
+    const values = valuesByLabel.get(label) || Array(count).fill(0);
+    values[index] += value;
+    valuesByLabel.set(label, values);
+  }
+
+  if (mode === 'workload') {
+    ensure('日工作量');
+    events.forEach((event) => {
+      if (event.type === 'todo' && event.completedAt) add('日工作量', dateInputValue(new Date(event.completedAt)), event.workload || 0);
+    });
+  } else if (mode === 'habit') {
+    events.filter((event) => event.type === 'habit' && event.hasMetric).forEach((event) => ensure(event.name));
+    events.filter((event) => event.type === 'habit' && event.hasMetric).forEach((event) => {
+      event.metricRecords.forEach((record) => add(event.name, dateInputValue(new Date(record.at)), record.value));
+    });
+  } else {
+    if (mode === 'event') events.forEach((event) => ensure(event.name));
+    if (mode === 'category') events.forEach((event) => ensure(event.category || '默认'));
+    if (mode === 'tag') events.forEach((event) => (event.tags?.length ? event.tags : ['未标记']).forEach(ensure));
+    segments.forEach((segment) => {
+      const event = eventLookup.get(segment.eventId);
+      const dateKey = dateInputValue(new Date(segment.start));
+      const minutes = segment.durationMs / 60000;
+      if (mode === 'event') add(segment.eventName, dateKey, minutes);
+      if (mode === 'category') add(event?.category || '默认', dateKey, minutes);
+      if (mode === 'tag') (event?.tags?.length ? event.tags : ['未标记']).forEach((tag) => add(tag, dateKey, minutes));
+    });
+  }
+
+  const series = Array.from(valuesByLabel.entries())
+    .sort((a, b) => b[1].reduce((sum, value) => sum + value, 0) - a[1].reduce((sum, value) => sum + value, 0))
+    .map(([label, values], index) => ({ label, values, color: trendColors[index % trendColors.length] }));
+  return { labels, dateKeys, series };
 }
 
 function eventToDraft(event: TracEvent): EventDraft {
@@ -307,7 +389,8 @@ function eventToDraft(event: TracEvent): EventDraft {
     name: event.name,
     tags: event.tags || [],
     category: event.category || '默认',
-    matrix: event.matrix || 'important-urgent',
+    importance: getEventImportance(event),
+    deadline: event.deadline || '',
     workload: event.workload || 3,
     hasMetric: Boolean(event.hasMetric),
     metricPrompt: event.metricPrompt || '',
@@ -323,7 +406,7 @@ export default function Home() {
   const [activeEventId, setActiveEventId] = useState<string | null>('todo-english');
   const [activeStartedAt, setActiveStartedAt] = useState<string | null>(new Date(Date.now() - 17 * 60000).toISOString());
   const [period, setPeriod] = useState<Period>('day');
-  const [chartMode, setChartMode] = useState<ChartMode>('line');
+  const [trendMode, setTrendMode] = useState<TrendMode>('event');
   const [tick, setTick] = useState(Date.now());
   const [switchOpen, setSwitchOpen] = useState(false);
   const [completionOpen, setCompletionOpen] = useState(false);
@@ -342,12 +425,15 @@ export default function Home() {
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved) as PersistedState;
-      const savedEvents = parsed.events?.length ? parsed.events : seedEvents;
+      const savedEvents = (parsed.events?.length ? parsed.events : seedEvents).map((event) => ({
+        ...event,
+        importance: getEventImportance(event),
+      }));
       setEvents(savedEvents);
       setSegments(parsed.segments || []);
       setActiveEventId(parsed.activeEventId ?? null);
       setActiveStartedAt(parsed.activeStartedAt ?? null);
-      setChartMode(parsed.chartMode || 'line');
+      setTrendMode(parsed.trendMode || 'event');
       setCategories(parsed.categories?.length ? parsed.categories : deriveCategories(savedEvents));
       setTags(parsed.tags?.length ? parsed.tags : deriveTags(savedEvents));
     } catch {
@@ -361,13 +447,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const payload: PersistedState = { events, segments, activeEventId, activeStartedAt, chartMode, categories, tags };
+    const payload: PersistedState = { events, segments, activeEventId, activeStartedAt, trendMode, categories, tags };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [events, segments, activeEventId, activeStartedAt, chartMode, categories, tags]);
+  }, [events, segments, activeEventId, activeStartedAt, trendMode, categories, tags]);
 
   const activeEvent = events.find((event) => event.id === activeEventId) || null;
   const elapsedMs = activeStartedAt ? tick - new Date(activeStartedAt).getTime() : 0;
-  const todaySegments = useMemo(() => segments.filter((segment) => isToday(segment.start)), [segments]);
   const periodSegments = useMemo(() => segments.filter((segment) => inPeriod(segment.start, period)), [segments, period]);
 
   const stats = useMemo(() => {
@@ -394,7 +479,7 @@ export default function Home() {
     return { byEvent, byTag, byCategory, dailyTotal, focusedTotal, completedWorkload };
   }, [events, period, periodSegments]);
 
-  const series = useMemo(() => miniSeries(periodSegments, period), [periodSegments, period]);
+  const trend = useMemo(() => buildTrendSeries(period, trendMode, segments, events), [events, period, segments, trendMode]);
 
   function closeActive(endAt: Date, completed?: boolean, metric?: number) {
     if (!activeEvent || !activeStartedAt) return;
@@ -433,6 +518,10 @@ export default function Home() {
   function requestEnd() {
     if (!activeEvent) {
       setSwitchOpen(true);
+      return;
+    }
+    if (activeEvent.type === 'daily') {
+      finishEnd(false);
       return;
     }
     setPendingEndAt(new Date().toISOString());
@@ -515,7 +604,9 @@ export default function Home() {
                 name: normalizedDraft.name,
                 tags: normalizedDraft.tags,
                 category: normalizedDraft.category,
-                matrix: normalizedDraft.type === 'todo' ? normalizedDraft.matrix : undefined,
+                importance: normalizedDraft.type === 'todo' ? normalizedDraft.importance : undefined,
+                deadline: normalizedDraft.type === 'todo' ? normalizedDraft.deadline || undefined : undefined,
+                matrix: undefined,
                 workload: normalizedDraft.type === 'todo' ? normalizedDraft.workload : undefined,
                 hasMetric: normalizedDraft.type === 'habit' ? normalizedDraft.hasMetric : undefined,
                 metricPrompt: normalizedDraft.type === 'habit' && normalizedDraft.hasMetric ? normalizedDraft.metricPrompt.trim() : undefined,
@@ -530,7 +621,8 @@ export default function Home() {
         name: normalizedDraft.name,
         tags: normalizedDraft.tags,
         category: normalizedDraft.category,
-        matrix: normalizedDraft.type === 'todo' ? normalizedDraft.matrix : undefined,
+        importance: normalizedDraft.type === 'todo' ? normalizedDraft.importance : undefined,
+        deadline: normalizedDraft.type === 'todo' ? normalizedDraft.deadline || undefined : undefined,
         workload: normalizedDraft.type === 'todo' ? normalizedDraft.workload : undefined,
         hasMetric: normalizedDraft.type === 'habit' ? normalizedDraft.hasMetric : undefined,
         metricPrompt: normalizedDraft.type === 'habit' && normalizedDraft.hasMetric ? normalizedDraft.metricPrompt.trim() : undefined,
@@ -602,8 +694,8 @@ export default function Home() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Campus life tracker</p>
           <h1>Trac</h1>
+          <p className="brand-subtitle">校园生活时间记录</p>
         </div>
         <nav className="page-tabs" aria-label="页面导航">
           {(['record', 'events', 'stats'] as AppPage[]).map((item) => (
@@ -620,7 +712,7 @@ export default function Home() {
           activeEvent={activeEvent}
           activeStartedAt={activeStartedAt}
           elapsedMs={elapsedMs}
-          segments={todaySegments}
+          segments={segments}
           onEnd={requestEnd}
           onMorning={() => setSwitchOpen(true)}
         />
@@ -646,10 +738,10 @@ export default function Home() {
         <StatsPage
           period={period}
           setPeriod={setPeriod}
-          chartMode={chartMode}
-          setChartMode={setChartMode}
+          trendMode={trendMode}
+          setTrendMode={setTrendMode}
           stats={stats}
-          series={series}
+          trend={trend}
           events={events}
         />
       )}
@@ -710,12 +802,27 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, 
   onEnd: () => void;
   onMorning: () => void;
 }) {
+  const [timelineZoom, setTimelineZoom] = useState(1);
+  const [selectedDate, setSelectedDate] = useState(() => dateInputValue(new Date()));
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const date = new Date();
+    date.setDate(1);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  });
+  const todayDate = dateInputValue(new Date());
+  const selectedIsToday = selectedDate === todayDate;
+  function adjustTimelineZoom(delta: number) {
+    setTimelineZoom((current) => Math.min(3.5, Math.max(1, Math.round((current + delta) * 4) / 4)));
+  }
+
   return (
     <div className="page-grid record-grid">
       <section className={`tracker-panel ${activeEvent ? '' : 'sleeping'}`} aria-label="当前事件">
         <div className="current-block">
-          <span className="material-symbols-outlined active-icon" aria-hidden="true">
-            {activeEvent ? typeMeta[activeEvent.type].icon : 'bedtime'}
+          <span className="active-icon" aria-hidden="true">
+            <span className="material-symbols-outlined">{activeEvent ? typeMeta[activeEvent.type].icon : 'bedtime'}</span>
           </span>
           <div>
             <p className="eyebrow">{activeEvent ? '当前任务情况' : '晚安模式'}</p>
@@ -737,37 +844,130 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, 
         )}
       </section>
 
-      <section className="timeline wide" aria-label="今日轨迹">
+      <section className="timeline wide" aria-label={`${selectedIsToday ? '今日' : formatDateLabel(`${selectedDate}T00:00:00`)}轨迹`}>
         <div className="section-head">
           <div>
             <p className="eyebrow">Timeline</p>
-            <h2>今日轨迹</h2>
+            <h2>{selectedIsToday ? '今日轨迹' : `${formatDateLabel(`${selectedDate}T00:00:00`)}轨迹`}</h2>
           </div>
-          <span className="live-dot">今天</span>
+          <div className="timeline-tools">
+            <div className="calendar-anchor">
+              <button
+                className={`date-picker-trigger ${selectedIsToday ? 'today' : ''}`}
+                onClick={() => {
+                  const month = new Date(`${selectedDate}T00:00:00`);
+                  month.setDate(1);
+                  setCalendarMonth(month);
+                  setCalendarOpen((open) => !open);
+                }}
+                aria-expanded={calendarOpen}
+                aria-haspopup="dialog"
+              >
+                <span className="material-symbols-outlined" aria-hidden="true">calendar_today</span>
+                <span>{selectedIsToday ? '今天' : formatDateLabel(`${selectedDate}T00:00:00`)}</span>
+              </button>
+              {calendarOpen && (
+                <CalendarPopover
+                  month={calendarMonth}
+                  selectedDate={selectedDate}
+                  maxDate={todayDate}
+                  onMonthChange={setCalendarMonth}
+                  onSelect={(date) => {
+                    setSelectedDate(date);
+                    setCalendarOpen(false);
+                  }}
+                  onClose={() => setCalendarOpen(false)}
+                />
+              )}
+            </div>
+            <div className="timeline-zoom-controls" aria-label="轨迹缩放">
+              <button className="icon-only" onClick={() => adjustTimelineZoom(-0.25)} disabled={timelineZoom <= 1} aria-label="缩小轨迹">
+                <span className="material-symbols-outlined" aria-hidden="true">remove</span>
+              </button>
+              <span>{Math.round(timelineZoom * 100)}%</span>
+              <button className="icon-only" onClick={() => adjustTimelineZoom(0.25)} disabled={timelineZoom >= 3.5} aria-label="放大轨迹">
+                <span className="material-symbols-outlined" aria-hidden="true">add</span>
+              </button>
+            </div>
+          </div>
         </div>
-        <DayTimeline activeEvent={activeEvent} activeStartedAt={activeStartedAt} elapsedMs={elapsedMs} segments={segments} />
+        <DayTimeline activeEvent={activeEvent} activeStartedAt={activeStartedAt} elapsedMs={elapsedMs} segments={segments} selectedDate={selectedDate} zoom={timelineZoom} onZoom={adjustTimelineZoom} />
       </section>
     </div>
   );
 }
 
-function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments }: {
+function CalendarPopover({ month, selectedDate, maxDate, onMonthChange, onSelect, onClose }: {
+  month: Date;
+  selectedDate: string;
+  maxDate: string;
+  onMonthChange: (month: Date) => void;
+  onSelect: (date: string) => void;
+  onClose: () => void;
+}) {
+  const monthStart = new Date(month.getFullYear(), month.getMonth(), 1);
+  const max = new Date(`${maxDate}T00:00:00`);
+  const currentMonthStart = new Date(max.getFullYear(), max.getMonth(), 1);
+  const leading = (monthStart.getDay() + 6) % 7;
+  const dayCount = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const cells = [...Array(leading).fill(null), ...Array.from({ length: dayCount }, (_, index) => index + 1)];
+
+  function moveMonth(delta: number) {
+    onMonthChange(new Date(month.getFullYear(), month.getMonth() + delta, 1));
+  }
+
+  return (
+    <div className="calendar-popover" role="dialog" aria-label="选择轨迹日期">
+      <div className="calendar-head">
+        <button className="icon-only" onClick={() => moveMonth(-1)} aria-label="上个月"><span className="material-symbols-outlined" aria-hidden="true">chevron_left</span></button>
+        <strong>{month.getFullYear()}年{month.getMonth() + 1}月</strong>
+        <button className="icon-only" onClick={() => moveMonth(1)} disabled={monthStart >= currentMonthStart} aria-label="下个月"><span className="material-symbols-outlined" aria-hidden="true">chevron_right</span></button>
+        <button className="calendar-close icon-only" onClick={onClose} aria-label="关闭日历"><span className="material-symbols-outlined" aria-hidden="true">close</span></button>
+      </div>
+      <div className="calendar-weekdays" aria-hidden="true">{['一', '二', '三', '四', '五', '六', '日'].map((day) => <span key={day}>{day}</span>)}</div>
+      <div className="calendar-days">
+        {cells.map((day, index) => {
+          if (day === null) return <span key={`empty-${index}`} />;
+          const date = new Date(month.getFullYear(), month.getMonth(), day);
+          const value = dateInputValue(date);
+          const disabled = date > max;
+          return (
+            <button className={`${value === selectedDate ? 'selected' : ''} ${value === maxDate ? 'today' : ''}`} disabled={disabled} onClick={() => onSelect(value)} key={value} aria-label={`${month.getFullYear()}年${month.getMonth() + 1}月${day}日`}>
+              {day}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments, selectedDate, zoom, onZoom }: {
   activeEvent: TracEvent | null;
   activeStartedAt: string | null;
   elapsedMs: number;
   segments: Segment[];
+  selectedDate: string;
+  zoom: number;
+  onZoom: (delta: number) => void;
 }) {
-  const dayStart = new Date();
-  dayStart.setHours(0, 0, 0, 0);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const dayStart = new Date(`${selectedDate}T00:00:00`);
   const dayEnd = new Date(dayStart);
   dayEnd.setDate(dayEnd.getDate() + 1);
   const now = new Date();
-  const currentMs = Math.min(dayEnd.getTime(), Math.max(dayStart.getTime(), now.getTime()));
+  const selectedIsToday = selectedDate === dateInputValue(now);
+  const currentMs = selectedIsToday ? Math.min(dayEnd.getTime(), Math.max(dayStart.getTime(), now.getTime())) : null;
   const dayMs = dayEnd.getTime() - dayStart.getTime();
-  const todaySegments = [...segments].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  const selectedSegments = segments
+    .filter((segment) => {
+      const start = new Date(segment.start);
+      return start >= dayStart && start < dayEnd;
+    })
+    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
 
   const intervals = [
-    ...todaySegments.map((segment) => ({
+    ...selectedSegments.map((segment) => ({
       id: segment.id,
       eventName: segment.eventName,
       eventType: segment.eventType,
@@ -776,7 +976,7 @@ function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments }: {
       durationMs: segment.durationMs,
       active: false,
     })),
-    ...(activeEvent && activeStartedAt
+    ...(selectedIsToday && activeEvent && activeStartedAt
       ? [{
           id: 'active',
           eventName: activeEvent.name,
@@ -791,7 +991,7 @@ function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments }: {
 
   const markers = [
     ...intervals.flatMap((item) => [item.start, item.end]),
-    now,
+    ...(selectedIsToday ? [now] : []),
   ]
     .filter((date) => date >= dayStart && date <= dayEnd)
     .map((date) => date.getTime());
@@ -803,32 +1003,59 @@ function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments }: {
   }
 
   return (
-    <div className="day-timeline">
-      <div className="time-labels" aria-hidden="true">
-        <span>00:00</span>
-        <span>12:00</span>
-        <span>24:00</span>
-      </div>
-      <div className="day-axis" aria-hidden="true">
-        {uniqueMarkers.map((time) => (
-          <span
-            className={`day-dot ${Math.abs(time - currentMs) < 1000 ? 'now' : ''}`}
-            key={time}
-            style={{ top: topFor(time) }}
-          />
-        ))}
-      </div>
-      <div className="day-events">
-        {intervals.length === 0 ? <p className="empty">今天还没有轨迹。</p> : intervals.map((item) => {
-          const midpoint = (item.start.getTime() + item.end.getTime()) / 2;
-          return (
-            <article className={`day-event ${item.active ? 'active' : ''}`} key={item.id} style={{ top: topFor(midpoint) }}>
-              <time>{formatClock(item.start)} - {item.active ? '现在' : formatClock(item.end)}</time>
-              <h3>{item.eventName}</h3>
-              <p>{typeMeta[item.eventType].label} · {formatDuration(item.durationMs)}</p>
-            </article>
-          );
-        })}
+    <div
+      className="timeline-viewport"
+      onWheel={(event) => {
+        event.preventDefault();
+        onZoom(event.deltaY < 0 ? 0.25 : -0.25);
+      }}
+      aria-label={`${selectedDate} 轨迹，可用鼠标滚轮或缩放按钮调整比例`}
+    >
+      <div className="day-timeline" style={{ height: `${620 * zoom}px` }}>
+        <div className="time-labels" aria-hidden="true">
+          <span>00:00</span>
+          <span>12:00</span>
+          <span>24:00</span>
+        </div>
+        <div className="day-axis" aria-hidden="true">
+          {intervals.map((item) => (
+            <span
+              className={`day-period ${item.active ? 'active' : ''} ${expandedId === item.id ? 'highlighted' : ''}`}
+              key={`period-${item.id}`}
+              style={{ top: topFor(item.start), height: `${Math.max(((item.end.getTime() - item.start.getTime()) / dayMs) * 100, 0.35)}%` }}
+              onMouseEnter={() => setExpandedId(item.id)}
+              onMouseLeave={() => setExpandedId(null)}
+            />
+          ))}
+          {uniqueMarkers.map((time) => (
+            <span className={`day-dot ${currentMs !== null && Math.abs(time - currentMs) < 1000 ? 'now' : ''}`} key={time} style={{ top: topFor(time) }} />
+          ))}
+        </div>
+        <div className="day-events">
+          {intervals.length === 0 ? <p className="empty">这一天还没有轨迹。</p> : intervals.map((item) => {
+            const midpoint = (item.start.getTime() + item.end.getTime()) / 2;
+            const expanded = expandedId === item.id;
+            return (
+              <article
+                className={`day-event ${item.active ? 'active' : ''} ${expanded ? 'expanded' : ''}`}
+                key={item.id}
+                style={{ top: topFor(midpoint) }}
+                tabIndex={0}
+                onMouseEnter={() => setExpandedId(item.id)}
+                onMouseLeave={() => setExpandedId(null)}
+                onFocus={() => setExpandedId(item.id)}
+                onBlur={() => setExpandedId(null)}
+                onClick={() => setExpandedId((current) => current === item.id ? null : item.id)}
+              >
+                <h3>{item.eventName}</h3>
+                <div className="day-event-details">
+                  <time>{formatClock(item.start)} - {item.active ? '现在' : formatClock(item.end)}</time>
+                  <p>{typeMeta[item.eventType].label} · {formatDuration(item.durationMs)}</p>
+                </div>
+              </article>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -882,23 +1109,21 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, on
                         <span className="material-symbols-outlined drag-icon" aria-hidden="true">drag_indicator</span>
                         <span>
                           <strong>{event.name}</strong>
-                          <small>
-                            {event.type === 'todo' && event.matrix ? `${matrixMeta[event.matrix].label} · 工作量 ${event.workload}` : event.category}
-                            {event.tags.length ? ` · ${event.tags.join(' / ')}` : ''}
-                          </small>
+                          <small>{eventMetaLine(event)}</small>
                         </span>
-                        {event.type !== 'daily' && (
-                          <button className={`complete-action ${event.completed ? 'done' : ''}`} onClick={() => onToggleDone(event.id)} aria-label={`${event.completed ? '取消完成' : '完成'} ${event.name}`}>
-                            <span className="material-symbols-outlined" aria-hidden="true">{event.completed ? 'check_circle' : 'radio_button_unchecked'}</span>
-                            <span>{event.completed ? '已完成' : '完成'}</span>
+                        <span className="event-actions">
+                          <button className="icon-only event-tool edit-tool" onClick={() => onEdit(event)} aria-label={`编辑 ${event.name}`}>
+                            <span className="material-symbols-outlined" aria-hidden="true">edit</span>
                           </button>
-                        )}
-                        <button className="icon-only event-tool" onClick={() => onEdit(event)} aria-label={`编辑 ${event.name}`}>
-                          <span className="material-symbols-outlined" aria-hidden="true">edit</span>
-                        </button>
-                        <button className="icon-only event-tool danger" onClick={() => onDelete(event.id)} aria-label={`删除 ${event.name}`}>
-                          <span className="material-symbols-outlined" aria-hidden="true">delete</span>
-                        </button>
+                          <button className="icon-only event-tool danger delete-tool" onClick={() => onDelete(event.id)} aria-label={`删除 ${event.name}`}>
+                            <span className="material-symbols-outlined" aria-hidden="true">delete</span>
+                          </button>
+                          {event.type !== 'daily' && (
+                            <button className={`icon-only event-tool completion-tool ${event.completed ? 'done' : ''}`} onClick={() => onToggleDone(event.id)} aria-label={`${event.completed ? '取消完成' : '完成'} ${event.name}`}>
+                              <span className="material-symbols-outlined" aria-hidden="true">{event.completed ? 'check_box' : 'check_box_outline_blank'}</span>
+                            </button>
+                          )}
+                        </span>
                       </article>
                     ))}
                   </div>
@@ -912,15 +1137,28 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, on
   );
 }
 
-function StatsPage({ period, setPeriod, chartMode, setChartMode, stats, series, events }: {
+function StatsPage({ period, setPeriod, trendMode, setTrendMode, stats, trend, events }: {
   period: Period;
   setPeriod: (period: Period) => void;
-  chartMode: ChartMode;
-  setChartMode: (mode: ChartMode) => void;
+  trendMode: TrendMode;
+  setTrendMode: (mode: TrendMode) => void;
   stats: { byEvent: Record<string, number>; byTag: Record<string, number>; byCategory: Record<string, number>; dailyTotal: number; focusedTotal: number; completedWorkload: number };
-  series: number[];
+  trend: { labels: string[]; dateKeys: string[]; series: TrendSeries[] };
   events: TracEvent[];
 }) {
+  const trendOptions: { value: TrendMode; label: string }[] = [
+    { value: 'workload', label: '日工作量' },
+    { value: 'event', label: '事件耗时' },
+    { value: 'tag', label: '标签耗时' },
+    { value: 'category', label: '分类耗时' },
+    { value: 'habit', label: '习惯指标' },
+  ];
+  const [trendItem, setTrendItem] = useState('');
+  useEffect(() => {
+    if (!trend.series.some((item) => item.label === trendItem)) setTrendItem(trend.series[0]?.label || '');
+  }, [trend.series, trendItem]);
+  const selectedSeries = trend.series.find((item) => item.label === trendItem) || trend.series[0];
+  const valueLabel = trendMode === 'workload' ? '工作量' : trendMode === 'habit' ? '指标值' : '分钟';
   return (
     <section className="analytics" aria-label="统计数据">
       <div className="section-head">
@@ -937,20 +1175,43 @@ function StatsPage({ period, setPeriod, chartMode, setChartMode, stats, series, 
         </div>
       </div>
       <div className="stat-grid">
-        <article><span className="material-symbols-outlined" aria-hidden="true">schedule</span><p>日常总耗时</p><strong>{formatDuration(stats.dailyTotal)}</strong></article>
-        <article><span className="material-symbols-outlined" aria-hidden="true">bolt</span><p>习惯与待办</p><strong>{formatDuration(stats.focusedTotal)}</strong></article>
-        <article><span className="material-symbols-outlined" aria-hidden="true">fitness_center</span><p>完成工作量</p><strong>{stats.completedWorkload}</strong></article>
+        <article><span className="stat-icon" aria-hidden="true"><span className="material-symbols-outlined">schedule</span></span><p>日常总耗时</p><strong>{formatDuration(stats.dailyTotal)}</strong></article>
+        <article><span className="stat-icon" aria-hidden="true"><span className="material-symbols-outlined">bolt</span></span><p>习惯与待办</p><strong>{formatDuration(stats.focusedTotal)}</strong></article>
+        <article><span className="stat-icon" aria-hidden="true"><span className="material-symbols-outlined">fitness_center</span></span><p>完成工作量</p><strong>{stats.completedWorkload}</strong></article>
       </div>
-      <div className="chart-card">
-        <div className="chart-toolbar">
-          <h3>时间趋势</h3>
-          <div className="segmented small">
-            <button className={chartMode === 'line' ? 'selected' : ''} onClick={() => setChartMode('line')}>折线</button>
-            <button className={chartMode === 'heatmap' ? 'selected' : ''} onClick={() => setChartMode('heatmap')}>热力</button>
+      {period !== 'day' && (
+        <div className="chart-card">
+          <div className="chart-toolbar">
+            <div>
+              <h3>时间趋势</h3>
+              <p>{period === 'week' ? '最近 7 日（含今日）' : '最近 30 日（含今日）'}</p>
+            </div>
+            <div className="trend-selectors">
+              <label className="trend-selector">
+                <span>统计内容</span>
+                <select value={trendMode} onChange={(event) => setTrendMode(event.target.value as TrendMode)}>
+                  {trendOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              {trendMode !== 'workload' && (
+                <label className="trend-selector">
+                  <span>具体项目</span>
+                  <select value={selectedSeries?.label || ''} onChange={(event) => setTrendItem(event.target.value)} disabled={!selectedSeries}>
+                    {trend.series.map((item) => <option value={item.label} key={item.label}>{item.label}</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
           </div>
+          {!selectedSeries ? (
+            <div className="trend-empty"><span className="material-symbols-outlined" aria-hidden="true">query_stats</span><p>该时间范围内暂无数据</p></div>
+          ) : period === 'month' ? (
+            <MonthHeatmap dates={trend.dateKeys} values={selectedSeries.values} itemLabel={selectedSeries.label} valueLabel={valueLabel} color={selectedSeries.color} />
+          ) : (
+            <TrendChart labels={trend.labels} series={[selectedSeries]} valueLabel={valueLabel} />
+          )}
         </div>
-        {chartMode === 'line' ? <LineChart values={series} /> : <HeatMap values={series} />}
-      </div>
+      )}
       <div className="breakdowns">
         <Breakdown title="事件耗时" values={stats.byEvent} />
         <Breakdown title="标签耗时" values={stats.byTag} />
@@ -988,7 +1249,7 @@ function SwitchModal({ open, events, activeEventId, onPick, onGoodNight, onClose
                       <span className="material-symbols-outlined" aria-hidden="true">{typeMeta[event.type].icon}</span>
                       <span>
                         <strong>{event.name}</strong>
-                        <small>{event.category}{event.tags.length ? ` · ${event.tags.join(' / ')}` : ''}</small>
+                        <small>{eventMetaLine(event)}</small>
                       </span>
                     </button>
                   ))}
@@ -1059,10 +1320,16 @@ function EventEditorModal({ open, draft, setDraft, editing, categories, tags, on
         {draft.type === 'todo' && (
           <>
             <label>
-              重要紧急程度
-              <select value={draft.matrix} onChange={(event) => setDraft({ ...draft, matrix: event.target.value as Matrix })}>
-                {Object.entries(matrixMeta).map(([key, value]) => <option value={key} key={key}>{value.label}</option>)}
+              重要程度
+              <select value={draft.importance} onChange={(event) => setDraft({ ...draft, importance: event.target.value as Importance })}>
+                <option value="important">重要</option>
+                <option value="unimportant">不重要</option>
               </select>
+            </label>
+            <label>
+              DDL（可选）
+              <input type="date" value={draft.deadline} onChange={(event) => setDraft({ ...draft, deadline: event.target.value })} />
+              <small className="field-hint">距今天 7 日以内自动归为紧急，其他情况归为不紧急。</small>
             </label>
             <label>
               工作量
@@ -1144,7 +1411,7 @@ function Dialog({ open, title, icon, onClose, children, wide = false }: {
     <div className="modal-backdrop" role="presentation">
       <section className={`modal-card ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-head">
-          <span className="material-symbols-outlined" aria-hidden="true">{icon}</span>
+          <span className="dialog-icon" aria-hidden="true"><span className="material-symbols-outlined">{icon}</span></span>
           <h2>{title}</h2>
           <button className="icon-only" onClick={onClose} aria-label="关闭弹窗">
             <span className="material-symbols-outlined" aria-hidden="true">close</span>
@@ -1156,35 +1423,84 @@ function Dialog({ open, title, icon, onClose, children, wide = false }: {
   );
 }
 
-function LineChart({ values }: { values: number[] }) {
-  const max = Math.max(...values, 1);
-  const points = values
-    .map((value, index) => {
-      const x = 20 + (index * 560) / Math.max(values.length - 1, 1);
-      const y = 170 - (value / max) * 130;
-      return `${x},${y}`;
-    })
-    .join(' ');
+function TrendChart({ labels, series, valueLabel }: { labels: string[]; series: TrendSeries[]; valueLabel: string }) {
+  if (series.length === 0) return <div className="trend-empty"><span className="material-symbols-outlined" aria-hidden="true">query_stats</span><p>该时间范围内暂无数据</p></div>;
+  const width = labels.length > 7 ? 1220 : 760;
+  const height = 270;
+  const left = 48;
+  const right = 18;
+  const top = 18;
+  const bottom = 52;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const max = Math.max(...series.flatMap((item) => item.values), 1);
+  const xFor = (index: number) => left + (index * plotWidth) / Math.max(labels.length - 1, 1);
+  const yFor = (value: number) => top + plotHeight - (value / max) * plotHeight;
 
   return (
-    <svg className="line-chart" viewBox="0 0 600 190" role="img" aria-label="时间耗时折线图">
-      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-      {values.map((value, index) => {
-        const x = 20 + (index * 560) / Math.max(values.length - 1, 1);
-        const y = 170 - (value / max) * 130;
-        return <circle key={index} cx={x} cy={y} r="6" />;
-      })}
-    </svg>
+    <div className="trend-chart-wrap">
+      <div className="trend-legend">
+        {series.map((item) => <span key={item.label}><i style={{ background: item.color }} />{item.label}</span>)}
+      </div>
+      <div className="trend-scroll">
+        <svg className="trend-chart" viewBox={`0 0 ${width} ${height}`} style={{ minWidth: `${width}px` }} role="img" aria-label={`时间趋势，单位：${valueLabel}`}>
+          {[0, .25, .5, .75, 1].map((ratio) => {
+            const y = top + plotHeight - ratio * plotHeight;
+            return <g key={ratio}><line x1={left} x2={width - right} y1={y} y2={y} /><text x={left - 8} y={y + 4} textAnchor="end">{Math.round(max * ratio * 10) / 10}</text></g>;
+          })}
+          {labels.map((label, index) => <text className="trend-date" x={xFor(index)} y={height - 18} textAnchor="middle" key={`${label}-${index}`}>{label}</text>)}
+          {series.map((item) => {
+            const points = item.values.map((value, index) => `${xFor(index)},${yFor(value)}`).join(' ');
+            return (
+              <g key={item.label} style={{ color: item.color }}>
+                <polyline points={points} fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                {item.values.map((value, index) => <circle key={index} cx={xFor(index)} cy={yFor(value)} r="3.5"><title>{labels[index]} · {item.label}: {Math.round(value * 10) / 10} {valueLabel}</title></circle>)}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
   );
 }
 
-function HeatMap({ values }: { values: number[] }) {
+function MonthHeatmap({ dates, values, itemLabel, valueLabel, color }: { dates: string[]; values: number[]; itemLabel: string; valueLabel: string; color: string }) {
+  const firstDate = dates[0] ? new Date(`${dates[0]}T00:00:00`) : new Date();
+  const leading = (firstDate.getDay() + 6) % 7;
+  const cells: ({ date: string; value: number } | null)[] = [
+    ...Array(leading).fill(null),
+    ...dates.map((date, index) => ({ date, value: values[index] || 0 })),
+  ];
+  const columns = Math.ceil(cells.length / 7);
   const max = Math.max(...values, 1);
+  const formatFullDate = (date: string) => {
+    const value = new Date(`${date}T00:00:00`);
+    return `${value.getMonth() + 1}月${value.getDate()}日`;
+  };
+
   return (
-    <div className="heatmap" role="img" aria-label="时间耗时热力图">
-      {values.map((value, index) => (
-        <span key={index} style={{ opacity: 0.2 + (value / max) * 0.8 }} title={`${value} 分钟`} />
-      ))}
+    <div className="month-heatmap" aria-label={`${itemLabel}最近30日热力图`}>
+      <div className="heatmap-scroll">
+        <div className="heatmap-layout">
+          <div className="heatmap-weekdays" aria-hidden="true"><span>一</span><span /><span>三</span><span /><span>五</span><span /><span>日</span></div>
+          <div className="heatmap-grid" style={{ gridTemplateColumns: `repeat(${columns}, 24px)` }}>
+            {cells.map((cell, index) => cell ? (
+              <button
+                className={`heat-tile ${cell.value > 0 ? 'has-value' : ''}`}
+                style={{ backgroundColor: cell.value > 0 ? `color-mix(in srgb, ${color} ${Math.round(25 + (cell.value / max) * 75)}%, white)` : undefined }}
+                aria-label={`${formatFullDate(cell.date)}，${itemLabel}：${Math.round(cell.value * 10) / 10}${valueLabel}`}
+                key={cell.date}
+              >
+                <span className="heat-tooltip">{formatFullDate(cell.date)} · {itemLabel}：{Math.round(cell.value * 10) / 10} {valueLabel}</span>
+              </button>
+            ) : <span className="heat-placeholder" key={`empty-${index}`} />)}
+          </div>
+        </div>
+      </div>
+      <div className="heatmap-caption">
+        <span>{formatFullDate(dates[0])} — {formatFullDate(dates[dates.length - 1])}</span>
+        <span className="heatmap-scale"><span>少</span>{[20, 40, 60, 80, 100].map((strength) => <i style={{ backgroundColor: `color-mix(in srgb, ${color} ${strength}%, white)` }} key={strength} />)}<span>多</span></span>
+      </div>
     </div>
   );
 }

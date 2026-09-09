@@ -6,6 +6,8 @@ export const metadata: Metadata = {
   description: '记录校园生活事件、切换时间线，并查看习惯与待办统计。',
 };
 
+export const dynamic = 'force-static';
+
 export default function RootLayout({
   children,
 }: Readonly<{
