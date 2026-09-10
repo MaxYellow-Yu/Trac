@@ -404,7 +404,6 @@ export default function Home() {
   const [pendingMetric, setPendingMetric] = useState<number | undefined>(undefined);
   const [customEndOpen, setCustomEndOpen] = useState(false);
   const [customEndValue, setCustomEndValue] = useState('');
-  const [customNextEventId, setCustomNextEventId] = useState('');
   const [customEndError, setCustomEndError] = useState('');
   const [metricEditorId, setMetricEditorId] = useState<string | null>(null);
   const [metricRecordDrafts, setMetricRecordDrafts] = useState<MetricRecordDraft[]>([]);
@@ -591,9 +590,7 @@ export default function Home() {
 
   function openCustomEnd() {
     if (!activeEvent || !activeStartedAt) return;
-    const next = events.find((event) => event.id !== activeEvent.id && !(event.type === 'todo' && event.completed));
     setCustomEndValue(dateTimeLocalValue(new Date()));
-    setCustomNextEventId(next?.id || '');
     setCustomEndError('');
     setCustomEndOpen(true);
   }
@@ -611,14 +608,8 @@ export default function Home() {
       setCustomEndError('实际终止时间不能晚于当前时间。');
       return;
     }
-    if (!customNextEventId || customNextEventId === activeEvent.id) {
-      setCustomEndError('请选择该时间之后进行的其他事件。');
-      return;
-    }
-    closeActive(endAt, false);
-    setActiveEventId(customNextEventId);
-    setActiveStartedAt(endAt.toISOString());
     setCustomEndOpen(false);
+    prepareSwitch(false, undefined, endAt.toISOString());
   }
 
   function openMetricRecords(event: TracEvent) {
@@ -874,22 +865,15 @@ export default function Home() {
 
       <Dialog open={customEndOpen} title="补记实际终止时间" icon="history" onClose={() => setCustomEndOpen(false)}>
         <form className="event-form" onSubmit={submitCustomEnd}>
-          <p className="dialog-copy">修正“{activeEvent?.name}”的结束时间，并指定此后一直进行到现在的事件。</p>
+          <p className="dialog-copy">修正“{activeEvent?.name}”的结束时间。下一步将使用与普通结束相同的任务选择窗口。</p>
           <label>
             实际终止时间
             <input type="datetime-local" value={customEndValue} min={activeStartedAt ? dateTimeLocalValue(new Date(new Date(activeStartedAt).getTime() + 60000)) : undefined} max={dateTimeLocalValue(new Date())} onChange={(event) => { setCustomEndValue(event.target.value); setCustomEndError(''); }} />
           </label>
-          <label>
-            之后进行的事件
-            <select value={customNextEventId} onChange={(event) => { setCustomNextEventId(event.target.value); setCustomEndError(''); }}>
-              <option value="">请选择事件</option>
-              {events.filter((event) => event.id !== activeEventId && !(event.type === 'todo' && event.completed)).map((event) => <option value={event.id} key={event.id}>{event.name}</option>)}
-            </select>
-          </label>
           {customEndError && <p className="form-error" role="alert">{customEndError}</p>}
           <div className="dialog-actions">
             <button className="secondary-button" type="button" onClick={() => setCustomEndOpen(false)}>取消</button>
-            <button className="primary-button inline" type="submit">保存并切换</button>
+            <button className="primary-button inline" type="submit">下一步</button>
           </div>
         </form>
       </Dialog>
@@ -968,7 +952,7 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, 
               <div className="stop-menu">
                 <button onClick={() => { setEndMenuOpen(false); onCustomEnd(); }}>
                   <span className="material-symbols-outlined" aria-hidden="true">history</span>
-                  <span><strong>补记结束时间</strong><small>填写实际终止时间并切换后续事件</small></span>
+                  <span><strong>补记结束时间</strong><small>填写实际终止时间后选择下一事件</small></span>
                 </button>
               </div>
             )}

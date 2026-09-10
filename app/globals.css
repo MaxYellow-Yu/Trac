@@ -120,14 +120,15 @@ h3 { margin-bottom: 0; font-size: .95rem; font-weight: 700; }
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 22px;
-  overflow: hidden;
+  z-index: 5;
+  overflow: visible;
   border: 1px solid #e0e7ff;
   border-radius: 20px;
   background: linear-gradient(135deg, #fff 0%, #f5f7ff 100%);
   box-shadow: var(--shadow-card);
   padding: 24px;
 }
-.tracker-panel::before { position: absolute; inset: 0 auto 0 0; width: 5px; background: linear-gradient(180deg, #6366f1, #8b5cf6); content: ""; }
+.tracker-panel::before { position: absolute; inset: 0 auto 0 0; width: 5px; border-radius: 20px 0 0 20px; background: linear-gradient(180deg, #6366f1, #8b5cf6); content: ""; }
 .tracker-panel.sleeping { border-color: #e5e7eb; background: linear-gradient(135deg, #fff, #f8fafc); }
 .tracker-panel.sleeping::before { background: #cbd5e1; }
 .current-block { display: flex; align-items: center; gap: 15px; min-width: 0; }
@@ -156,7 +157,7 @@ h3 { margin-bottom: 0; font-size: .95rem; font-weight: 700; }
 .stop-dropdown { display: grid; width: 34px; min-height: 42px; place-items: center; border: 0; border-left: 1px solid #fecaca; border-radius: 0 10px 10px 0; background: var(--rose-soft); padding: 0; color: #b91c1c; transition: background .18s ease, color .18s ease; }
 .stop-dropdown:hover { background: #fee2e2; color: #991b1b; }
 .stop-dropdown .material-symbols-outlined { width: 20px; height: 20px; font-size: 20px; }
-.stop-menu { position: absolute; z-index: 12; top: calc(100% + 8px); right: 0; width: 270px; border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 6px; box-shadow: 0 14px 32px rgb(15 23 42 / 18%); }
+.stop-menu { position: absolute; z-index: 50; top: calc(100% + 8px); right: 0; width: 270px; border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 6px; box-shadow: 0 14px 32px rgb(15 23 42 / 18%); }
 .stop-menu > button { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 9px; width: 100%; border: 0; border-radius: 9px; background: transparent; padding: 9px; color: #475569; text-align: left; }
 .stop-menu > button:hover { background: #f8fafc; color: #334155; }
 .stop-menu strong, .stop-menu small { display: block; }
