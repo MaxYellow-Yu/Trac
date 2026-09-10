@@ -9,6 +9,7 @@ type Importance = 'important' | 'unimportant';
 type Period = 'day' | 'week' | 'month';
 type TrendMode = 'workload' | 'event' | 'tag' | 'category' | 'habit';
 type TrendSeries = { label: string; color: string; values: number[] };
+type MetricRecordDraft = { value: string; at: string };
 type EventDraft = {
   type: EventType;
   name: string;
@@ -220,6 +221,15 @@ function dateInputValue(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function dateTimeLocalValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
 function formatDateLabel(date: string | Date) {
   return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(new Date(date));
 }
@@ -273,12 +283,18 @@ function startOfPeriod(date: Date, period: Period) {
   return copy;
 }
 
-function inPeriod(date: string, period: Period) {
+function periodBounds(period: Period, anchorDate: string) {
+  const end = new Date(`${anchorDate}T00:00:00`);
+  const start = startOfPeriod(end, period);
+  const exclusiveEnd = new Date(end);
+  exclusiveEnd.setDate(exclusiveEnd.getDate() + 1);
+  return { start, end, exclusiveEnd };
+}
+
+function inPeriod(date: string, period: Period, anchorDate = dateInputValue(new Date())) {
   const target = new Date(date);
-  const tomorrow = new Date();
-  tomorrow.setHours(0, 0, 0, 0);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  return target >= startOfPeriod(new Date(), period) && target < tomorrow;
+  const { start, exclusiveEnd } = periodBounds(period, anchorDate);
+  return target >= start && target < exclusiveEnd;
 }
 
 function isToday(date: string) {
@@ -298,12 +314,11 @@ function groupTotal<T extends string>(entries: { keys: T[]; ms: number }[]) {
 
 const trendColors = ['#4f46e5', '#059669', '#d97706', '#e11d48', '#0891b2', '#7c3aed', '#65a30d', '#ea580c', '#0f766e', '#be123c'];
 
-function buildTrendSeries(period: Period, mode: TrendMode, segments: Segment[], events: TracEvent[]) {
+function buildTrendSeries(period: Period, mode: TrendMode, segments: Segment[], events: TracEvent[], anchorDate: string) {
   if (period === 'day') return { labels: [] as string[], dateKeys: [] as string[], series: [] as TrendSeries[] };
   const count = period === 'week' ? 7 : 30;
   const dates = Array.from({ length: count }, (_, index) => {
-    const date = new Date();
-    date.setHours(0, 0, 0, 0);
+    const date = new Date(`${anchorDate}T00:00:00`);
     date.setDate(date.getDate() - (count - 1 - index));
     return date;
   });
@@ -377,6 +392,7 @@ export default function Home() {
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [activeStartedAt, setActiveStartedAt] = useState<string | null>(null);
   const [period, setPeriod] = useState<Period>('day');
+  const [statsAnchorDate, setStatsAnchorDate] = useState(() => dateInputValue(new Date()));
   const [trendMode, setTrendMode] = useState<TrendMode>('event');
   const [tick, setTick] = useState(Date.now());
   const [switchOpen, setSwitchOpen] = useState(false);
@@ -384,6 +400,14 @@ export default function Home() {
   const [metricOpen, setMetricOpen] = useState(false);
   const [metricValue, setMetricValue] = useState('');
   const [pendingEndAt, setPendingEndAt] = useState<string | null>(null);
+  const [pendingCompletion, setPendingCompletion] = useState(false);
+  const [pendingMetric, setPendingMetric] = useState<number | undefined>(undefined);
+  const [customEndOpen, setCustomEndOpen] = useState(false);
+  const [customEndValue, setCustomEndValue] = useState('');
+  const [customNextEventId, setCustomNextEventId] = useState('');
+  const [customEndError, setCustomEndError] = useState('');
+  const [metricEditorId, setMetricEditorId] = useState<string | null>(null);
+  const [metricRecordDrafts, setMetricRecordDrafts] = useState<MetricRecordDraft[]>([]);
   const [eventModalOpen, setEventModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<EventDraft>(emptyDraft);
@@ -428,7 +452,7 @@ export default function Home() {
 
   const activeEvent = events.find((event) => event.id === activeEventId) || null;
   const elapsedMs = activeStartedAt ? tick - new Date(activeStartedAt).getTime() : 0;
-  const periodSegments = useMemo(() => segments.filter((segment) => inPeriod(segment.start, period)), [segments, period]);
+  const periodSegments = useMemo(() => segments.filter((segment) => inPeriod(segment.start, period, statsAnchorDate)), [segments, period, statsAnchorDate]);
 
   const stats = useMemo(() => {
     const byEvent = groupTotal(periodSegments.map((segment) => ({ keys: [segment.eventName], ms: segment.durationMs })));
@@ -448,13 +472,13 @@ export default function Home() {
       }),
     );
     const completedWorkload = events
-      .filter((event) => event.type === 'todo' && event.completed && event.completedAt && inPeriod(event.completedAt, period))
+      .filter((event) => event.type === 'todo' && event.completed && event.completedAt && inPeriod(event.completedAt, period, statsAnchorDate))
       .reduce((sum, event) => sum + (event.workload || 0), 0);
 
     return { byEvent, byTag, byCategory, dailyTotal, focusedTotal, completedWorkload };
-  }, [events, period, periodSegments]);
+  }, [events, period, periodSegments, statsAnchorDate]);
 
-  const trend = useMemo(() => buildTrendSeries(period, trendMode, segments, events), [events, period, segments, trendMode]);
+  const trend = useMemo(() => buildTrendSeries(period, trendMode, segments, events, statsAnchorDate), [events, period, segments, statsAnchorDate, trendMode]);
 
   function closeActive(endAt: Date, completed?: boolean, metric?: number) {
     if (!activeEvent || !activeStartedAt) return;
@@ -495,11 +519,12 @@ export default function Home() {
       setSwitchOpen(true);
       return;
     }
+    const endAt = new Date().toISOString();
+    setPendingEndAt(endAt);
     if (activeEvent.type === 'daily') {
-      finishEnd(false);
+      prepareSwitch(false, undefined, endAt);
       return;
     }
-    setPendingEndAt(new Date().toISOString());
     setCompletionOpen(true);
   }
 
@@ -510,40 +535,116 @@ export default function Home() {
       setMetricOpen(true);
       return;
     }
-    finishEnd(done);
+    prepareSwitch(done);
   }
 
   function submitMetric(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = Number(metricValue);
-    finishEnd(false, Number.isFinite(value) ? value : undefined);
+    prepareSwitch(false, Number.isFinite(value) ? value : undefined);
     setMetricOpen(false);
   }
 
   function skipMetric() {
-    finishEnd(false);
+    prepareSwitch(false);
     setMetricOpen(false);
   }
 
-  function finishEnd(done: boolean, metric?: number) {
-    const endAt = new Date(pendingEndAt || new Date().toISOString());
-    closeActive(endAt, done, metric);
-    setActiveEventId(null);
-    setActiveStartedAt(null);
-    setPendingEndAt(null);
+  function prepareSwitch(done: boolean, metric?: number, endAt = pendingEndAt || new Date().toISOString()) {
+    setPendingEndAt(endAt);
+    setPendingCompletion(done);
+    setPendingMetric(metric);
     setSwitchOpen(true);
   }
 
+  function cancelPendingSwitch() {
+    setPendingEndAt(null);
+    setPendingCompletion(false);
+    setPendingMetric(undefined);
+    setSwitchOpen(false);
+  }
+
   function switchEvent(eventId: string) {
+    if (activeEventId === eventId) {
+      cancelPendingSwitch();
+      return;
+    }
+    const transitionAt = pendingEndAt ? new Date(pendingEndAt) : new Date();
+    if (activeEvent && activeStartedAt) closeActive(transitionAt, pendingCompletion, pendingMetric);
     setActiveEventId(eventId);
-    setActiveStartedAt(new Date().toISOString());
+    setActiveStartedAt(transitionAt.toISOString());
+    setPendingEndAt(null);
+    setPendingCompletion(false);
+    setPendingMetric(undefined);
     setSwitchOpen(false);
   }
 
   function sayGoodNight() {
+    if (activeEvent && activeStartedAt && pendingEndAt) closeActive(new Date(pendingEndAt), pendingCompletion, pendingMetric);
     setActiveEventId(null);
     setActiveStartedAt(null);
+    setPendingEndAt(null);
+    setPendingCompletion(false);
+    setPendingMetric(undefined);
     setSwitchOpen(false);
+  }
+
+  function openCustomEnd() {
+    if (!activeEvent || !activeStartedAt) return;
+    const next = events.find((event) => event.id !== activeEvent.id && !(event.type === 'todo' && event.completed));
+    setCustomEndValue(dateTimeLocalValue(new Date()));
+    setCustomNextEventId(next?.id || '');
+    setCustomEndError('');
+    setCustomEndOpen(true);
+  }
+
+  function submitCustomEnd(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!activeEvent || !activeStartedAt) return;
+    const endAt = new Date(customEndValue);
+    const startedAt = new Date(activeStartedAt);
+    if (!customEndValue || Number.isNaN(endAt.getTime()) || endAt <= startedAt) {
+      setCustomEndError('实际终止时间必须晚于本阶段开始时间。');
+      return;
+    }
+    if (endAt > new Date()) {
+      setCustomEndError('实际终止时间不能晚于当前时间。');
+      return;
+    }
+    if (!customNextEventId || customNextEventId === activeEvent.id) {
+      setCustomEndError('请选择该时间之后进行的其他事件。');
+      return;
+    }
+    closeActive(endAt, false);
+    setActiveEventId(customNextEventId);
+    setActiveStartedAt(endAt.toISOString());
+    setCustomEndOpen(false);
+  }
+
+  function openMetricRecords(event: TracEvent) {
+    setMetricEditorId(event.id);
+    setMetricRecordDrafts(event.metricRecords.map((record) => ({ value: String(record.value), at: dateTimeLocalValue(new Date(record.at)) })));
+  }
+
+  function saveMetricRecords(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!metricEditorId) return;
+    const records = metricRecordDrafts.flatMap((record) => {
+      const value = Number(record.value);
+      const at = new Date(record.at);
+      return Number.isFinite(value) && record.value !== '' && !Number.isNaN(at.getTime()) ? [{ value, at: at.toISOString() }] : [];
+    }).sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+    setEvents((current) => current.map((item) => item.id === metricEditorId ? { ...item, metricRecords: records } : item));
+    setMetricEditorId(null);
+  }
+
+  function shiftStatsAnchor(days: number) {
+    setStatsAnchorDate((current) => {
+      const next = new Date(`${current}T00:00:00`);
+      next.setDate(next.getDate() + days);
+      const today = dateInputValue(new Date());
+      return next > new Date(`${today}T00:00:00`) ? today : dateInputValue(next);
+    });
   }
 
   function openAddEvent() {
@@ -689,6 +790,7 @@ export default function Home() {
           elapsedMs={elapsedMs}
           segments={segments}
           onEnd={requestEnd}
+          onCustomEnd={openCustomEnd}
           onMorning={() => setSwitchOpen(true)}
         />
       )}
@@ -699,6 +801,7 @@ export default function Home() {
           activeEventId={activeEventId}
           onAdd={openAddEvent}
           onEdit={openEditEvent}
+          onEditMetrics={openMetricRecords}
           onEditCategories={() => { setListModal('category'); setListInput(''); }}
           onEditTags={() => { setListModal('tag'); setListInput(''); }}
           onToggleDone={toggleEventDone}
@@ -706,6 +809,17 @@ export default function Home() {
           draggingId={draggingId}
           setDraggingId={setDraggingId}
           reorder={reorder}
+          moveEvent={(sourceId, targetId) => {
+            setEvents((current) => {
+              const next = [...current];
+              const from = next.findIndex((item) => item.id === sourceId);
+              const to = next.findIndex((item) => item.id === targetId);
+              if (from < 0 || to < 0) return current;
+              const [moved] = next.splice(from, 1);
+              next.splice(to, 0, moved);
+              return next;
+            });
+          }}
         />
       )}
 
@@ -713,6 +827,8 @@ export default function Home() {
         <StatsPage
           period={period}
           setPeriod={setPeriod}
+          anchorDate={statsAnchorDate}
+          onShiftAnchor={shiftStatsAnchor}
           trendMode={trendMode}
           setTrendMode={setTrendMode}
           stats={stats}
@@ -721,7 +837,7 @@ export default function Home() {
         />
       )}
 
-      <SwitchModal open={switchOpen} events={events} activeEventId={activeEventId} onPick={switchEvent} onGoodNight={sayGoodNight} onClose={() => setSwitchOpen(false)} />
+      <SwitchModal open={switchOpen} events={events} activeEventId={activeEventId} onPick={switchEvent} onAdd={openAddEvent} onGoodNight={sayGoodNight} onClose={cancelPendingSwitch} />
 
       <Dialog open={completionOpen} title="事件完成了吗？" icon="task_alt" onClose={() => answerCompletion(false)}>
         <p className="dialog-copy">结束“{activeEvent?.name}”前，先记录它是否已经完成。日常和习惯事件会继续保存本段时间。</p>
@@ -756,6 +872,37 @@ export default function Home() {
         onClose={() => setEventModalOpen(false)}
       />
 
+      <Dialog open={customEndOpen} title="补记实际终止时间" icon="history" onClose={() => setCustomEndOpen(false)}>
+        <form className="event-form" onSubmit={submitCustomEnd}>
+          <p className="dialog-copy">修正“{activeEvent?.name}”的结束时间，并指定此后一直进行到现在的事件。</p>
+          <label>
+            实际终止时间
+            <input type="datetime-local" value={customEndValue} min={activeStartedAt ? dateTimeLocalValue(new Date(new Date(activeStartedAt).getTime() + 60000)) : undefined} max={dateTimeLocalValue(new Date())} onChange={(event) => { setCustomEndValue(event.target.value); setCustomEndError(''); }} />
+          </label>
+          <label>
+            之后进行的事件
+            <select value={customNextEventId} onChange={(event) => { setCustomNextEventId(event.target.value); setCustomEndError(''); }}>
+              <option value="">请选择事件</option>
+              {events.filter((event) => event.id !== activeEventId && !(event.type === 'todo' && event.completed)).map((event) => <option value={event.id} key={event.id}>{event.name}</option>)}
+            </select>
+          </label>
+          {customEndError && <p className="form-error" role="alert">{customEndError}</p>}
+          <div className="dialog-actions">
+            <button className="secondary-button" type="button" onClick={() => setCustomEndOpen(false)}>取消</button>
+            <button className="primary-button inline" type="submit">保存并切换</button>
+          </div>
+        </form>
+      </Dialog>
+
+      <MetricRecordsModal
+        open={Boolean(metricEditorId)}
+        event={events.find((item) => item.id === metricEditorId) || null}
+        records={metricRecordDrafts}
+        setRecords={setMetricRecordDrafts}
+        onSubmit={saveMetricRecords}
+        onClose={() => setMetricEditorId(null)}
+      />
+
       <ListEditorModal
         kind={listModal}
         items={listModal === 'category' ? categories : tags}
@@ -769,12 +916,13 @@ export default function Home() {
   );
 }
 
-function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, onMorning }: {
+function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, onCustomEnd, onMorning }: {
   activeEvent: TracEvent | null;
   activeStartedAt: string | null;
   elapsedMs: number;
   segments: Segment[];
   onEnd: () => void;
+  onCustomEnd: () => void;
   onMorning: () => void;
 }) {
   const [timelineZoom, setTimelineZoom] = useState(1);
@@ -786,6 +934,7 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, 
     date.setHours(0, 0, 0, 0);
     return date;
   });
+  const [endMenuOpen, setEndMenuOpen] = useState(false);
   const todayDate = dateInputValue(new Date());
   const selectedIsToday = selectedDate === todayDate;
   function adjustTimelineZoom(delta: number) {
@@ -807,10 +956,23 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, 
         </div>
         <div className="timer-readout" aria-live="polite">{activeEvent ? formatDuration(elapsedMs) : '休息中'}</div>
         {activeEvent ? (
-          <button className="icon-button stop" onClick={onEnd}>
-            <span className="material-symbols-outlined" aria-hidden="true">stop_circle</span>
-            <span>结束</span>
-          </button>
+          <div className="stop-control">
+            <button className="icon-button stop stop-main" onClick={() => { setEndMenuOpen(false); onEnd(); }}>
+              <span className="material-symbols-outlined" aria-hidden="true">stop_circle</span>
+              <span>结束</span>
+            </button>
+            <button className="stop-dropdown" onClick={() => setEndMenuOpen((open) => !open)} aria-label="更多结束选项" aria-expanded={endMenuOpen}>
+              <span className="material-symbols-outlined" aria-hidden="true">arrow_drop_down</span>
+            </button>
+            {endMenuOpen && (
+              <div className="stop-menu">
+                <button onClick={() => { setEndMenuOpen(false); onCustomEnd(); }}>
+                  <span className="material-symbols-outlined" aria-hidden="true">history</span>
+                  <span><strong>补记结束时间</strong><small>填写实际终止时间并切换后续事件</small></span>
+                </button>
+              </div>
+            )}
+          </div>
         ) : (
           <button className="primary-button inline" onClick={onMorning}>
             <span className="material-symbols-outlined" aria-hidden="true">wb_sunny</span>
@@ -1036,11 +1198,12 @@ function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments, select
   );
 }
 
-function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, onEditTags, onToggleDone, onDelete, draggingId, setDraggingId, reorder }: {
+function EventsPage({ events, activeEventId, onAdd, onEdit, onEditMetrics, onEditCategories, onEditTags, onToggleDone, onDelete, draggingId, setDraggingId, reorder, moveEvent }: {
   events: TracEvent[];
   activeEventId: string | null;
   onAdd: () => void;
   onEdit: (event: TracEvent) => void;
+  onEditMetrics: (event: TracEvent) => void;
   onEditCategories: () => void;
   onEditTags: () => void;
   onToggleDone: (id: string) => void;
@@ -1048,6 +1211,7 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, on
   draggingId: string | null;
   setDraggingId: (id: string | null) => void;
   reorder: (targetId: string) => void;
+  moveEvent: (sourceId: string, targetId: string) => void;
 }) {
   return (
     <div className="page-grid">
@@ -1071,7 +1235,7 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, on
                 <h3>{section.label}</h3>
                 {items.length === 0 ? <p className="empty">暂无事件</p> : (
                   <div className="event-list">
-                    {items.map((event) => (
+                    {items.map((event, index) => (
                       <article
                         className={`event-row editable ${activeEventId === event.id ? 'selected' : ''} ${draggingId === event.id ? 'dragging' : ''}`}
                         key={event.id}
@@ -1081,12 +1245,27 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, on
                         onDragOver={(dragEvent) => dragEvent.preventDefault()}
                         onDragEnd={() => setDraggingId(null)}
                       >
-                        <span className="material-symbols-outlined drag-icon" aria-hidden="true">drag_indicator</span>
+                        <span className="drag-handle-cell">
+                          <span className="material-symbols-outlined drag-icon" aria-hidden="true">drag_indicator</span>
+                          <span className="mobile-order-tools">
+                            <button className="icon-only event-tool" disabled={index === 0} onClick={() => index > 0 && moveEvent(event.id, items[index - 1].id)} aria-label={`上移 ${event.name}`}>
+                              <span className="material-symbols-outlined" aria-hidden="true">keyboard_arrow_up</span>
+                            </button>
+                            <button className="icon-only event-tool" disabled={index === items.length - 1} onClick={() => index < items.length - 1 && moveEvent(event.id, items[index + 1].id)} aria-label={`下移 ${event.name}`}>
+                              <span className="material-symbols-outlined" aria-hidden="true">keyboard_arrow_down</span>
+                            </button>
+                          </span>
+                        </span>
                         <span>
                           <strong>{event.name}</strong>
                           <small>{eventMetaLine(event)}</small>
                         </span>
                         <span className="event-actions">
+                          {event.type === 'habit' && event.hasMetric && (
+                            <button className="icon-only event-tool metric-tool" onClick={() => onEditMetrics(event)} aria-label={`查看和编辑 ${event.name} 的指标记录`}>
+                              <span className="material-symbols-outlined" aria-hidden="true">monitoring</span>
+                            </button>
+                          )}
                           <button className="icon-only event-tool edit-tool" onClick={() => onEdit(event)} aria-label={`编辑 ${event.name}`}>
                             <span className="material-symbols-outlined" aria-hidden="true">edit</span>
                           </button>
@@ -1112,9 +1291,11 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditCategories, on
   );
 }
 
-function StatsPage({ period, setPeriod, trendMode, setTrendMode, stats, trend, events }: {
+function StatsPage({ period, setPeriod, anchorDate, onShiftAnchor, trendMode, setTrendMode, stats, trend, events }: {
   period: Period;
   setPeriod: (period: Period) => void;
+  anchorDate: string;
+  onShiftAnchor: (days: number) => void;
   trendMode: TrendMode;
   setTrendMode: (mode: TrendMode) => void;
   stats: { byEvent: Record<string, number>; byTag: Record<string, number>; byCategory: Record<string, number>; dailyTotal: number; focusedTotal: number; completedWorkload: number };
@@ -1134,6 +1315,10 @@ function StatsPage({ period, setPeriod, trendMode, setTrendMode, stats, trend, e
   }, [trend.series, trendItem]);
   const selectedSeries = trend.series.find((item) => item.label === trendItem) || trend.series[0];
   const valueLabel = trendMode === 'workload' ? '工作量' : trendMode === 'habit' ? '指标值' : '分钟';
+  const bounds = periodBounds(period, anchorDate);
+  const rangeLabel = period === 'day' ? formatDateLabel(bounds.end) : `${formatDateLabel(bounds.start)} — ${formatDateLabel(bounds.end)}`;
+  const atToday = anchorDate === dateInputValue(new Date());
+  const largeStep = period === 'week' ? 7 : 30;
   return (
     <section className="analytics" aria-label="统计数据">
       <div className="section-head">
@@ -1141,12 +1326,21 @@ function StatsPage({ period, setPeriod, trendMode, setTrendMode, stats, trend, e
           <p className="eyebrow">Analytics</p>
           <h2>统计数据</h2>
         </div>
-        <div className="segmented">
-          {(['day', 'week', 'month'] as Period[]).map((item) => (
-            <button className={period === item ? 'selected' : ''} onClick={() => setPeriod(item)} key={item}>
-              {item === 'day' ? '日' : item === 'week' ? '周' : '月'}
-            </button>
-          ))}
+        <div className="stats-head-controls">
+          <div className="segmented">
+            {(['day', 'week', 'month'] as Period[]).map((item) => (
+              <button className={period === item ? 'selected' : ''} onClick={() => setPeriod(item)} key={item}>
+                {item === 'day' ? '日' : item === 'week' ? '周' : '月'}
+              </button>
+            ))}
+          </div>
+          <div className="stats-history" aria-label="统计日期回溯">
+            {period !== 'day' && <button className="history-jump" onClick={() => onShiftAnchor(-largeStep)} aria-label={`向前${largeStep}日`}>-{largeStep}</button>}
+            <button className="icon-only" onClick={() => onShiftAnchor(-1)} aria-label="向前1日"><span className="material-symbols-outlined" aria-hidden="true">chevron_left</span></button>
+            <strong>{rangeLabel}</strong>
+            <button className="icon-only" onClick={() => onShiftAnchor(1)} disabled={atToday} aria-label="向后1日"><span className="material-symbols-outlined" aria-hidden="true">chevron_right</span></button>
+            {period !== 'day' && <button className="history-jump" onClick={() => onShiftAnchor(largeStep)} disabled={atToday} aria-label={`向后${largeStep}日`}>+{largeStep}</button>}
+          </div>
         </div>
       </div>
       <div className="stat-grid">
@@ -1159,7 +1353,7 @@ function StatsPage({ period, setPeriod, trendMode, setTrendMode, stats, trend, e
           <div className="chart-toolbar">
             <div>
               <h3>时间趋势</h3>
-              <p>{period === 'week' ? '最近 7 日（含今日）' : '最近 30 日（含今日）'}</p>
+              <p>{rangeLabel}</p>
             </div>
             <div className="trend-selectors">
               <label className="trend-selector">
@@ -1191,23 +1385,28 @@ function StatsPage({ period, setPeriod, trendMode, setTrendMode, stats, trend, e
         <Breakdown title="事件耗时" values={stats.byEvent} />
         <Breakdown title="标签耗时" values={stats.byTag} />
         <Breakdown title="分类耗时" values={stats.byCategory} />
-        <MetricPanel events={events} />
+        <MetricPanel events={events} period={period} anchorDate={anchorDate} />
       </div>
     </section>
   );
 }
 
-function SwitchModal({ open, events, activeEventId, onPick, onGoodNight, onClose }: {
+function SwitchModal({ open, events, activeEventId, onPick, onAdd, onGoodNight, onClose }: {
   open: boolean;
   events: TracEvent[];
   activeEventId: string | null;
   onPick: (id: string) => void;
+  onAdd: () => void;
   onGoodNight: () => void;
   onClose: () => void;
 }) {
   return (
     <Dialog open={open} title="切换任务" icon="swap_horiz" onClose={onClose} wide>
       <div className="event-sections modal-sections">
+        <button className="primary-button switch-add-button" onClick={onAdd}>
+          <span className="material-symbols-outlined" aria-hidden="true">add</span>
+          <span>添加新事件</span>
+        </button>
         <button className="good-night-button" onClick={onGoodNight}>
           <span className="material-symbols-outlined" aria-hidden="true">nights_stay</span>
           <span><strong>晚安</strong><small>结束今天的记录，不再设置当前事件。</small></span>
@@ -1496,21 +1695,62 @@ function Breakdown({ title, values }: { title: string; values: Record<string, nu
   );
 }
 
-function MetricPanel({ events }: { events: TracEvent[] }) {
+function MetricPanel({ events, period, anchorDate }: { events: TracEvent[]; period: Period; anchorDate: string }) {
   const habits = events.filter((event) => event.type === 'habit' && event.hasMetric);
   return (
     <article className="breakdown-card">
       <h3>习惯指标</h3>
       {habits.length === 0 ? <p className="empty">暂无指标</p> : habits.map((habit) => {
-        const latest = habit.metricRecords.at(-1);
+        const total = habit.metricRecords.filter((record) => inPeriod(record.at, period, anchorDate)).reduce((sum, record) => sum + record.value, 0);
         return (
           <div className="metric-row" key={habit.id}>
             <span>{habit.name}</span>
-            <strong>{latest ? latest.value : '-'}</strong>
-            <small>{habit.metricPrompt || '指标值'}</small>
+            <strong>{Math.round(total * 100) / 100}</strong>
+            <small>{habit.metricPrompt || '指标值'} · {period === 'day' ? '当日合计' : period === 'week' ? '7 日合计' : '30 日合计'}</small>
           </div>
         );
       })}
     </article>
+  );
+}
+
+function MetricRecordsModal({ open, event, records, setRecords, onSubmit, onClose }: {
+  open: boolean;
+  event: TracEvent | null;
+  records: MetricRecordDraft[];
+  setRecords: React.Dispatch<React.SetStateAction<MetricRecordDraft[]>>;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={open} title={`${event?.name || '习惯'} · 指标记录`} icon="monitoring" onClose={onClose} wide>
+      <form className="event-form" onSubmit={onSubmit}>
+        <p className="dialog-copy">{event?.metricPrompt || '查看、补充或修正每一次指标数值。'}</p>
+        <div className="metric-record-list">
+          {records.length === 0 ? <p className="empty">暂无指标记录</p> : records.map((record, index) => (
+            <div className="metric-record-row" key={`${record.at}-${index}`}>
+              <label>
+                时间
+                <input type="datetime-local" value={record.at} onChange={(changeEvent) => setRecords((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, at: changeEvent.target.value } : item))} />
+              </label>
+              <label>
+                数值
+                <input type="number" step="any" value={record.value} onChange={(changeEvent) => setRecords((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: changeEvent.target.value } : item))} />
+              </label>
+              <button className="icon-only event-tool danger" type="button" onClick={() => setRecords((current) => current.filter((_, itemIndex) => itemIndex !== index))} aria-label="删除这条指标记录">
+                <span className="material-symbols-outlined" aria-hidden="true">delete</span>
+              </button>
+            </div>
+          ))}
+        </div>
+        <button className="secondary-button metric-add-record" type="button" onClick={() => setRecords((current) => [...current, { value: '', at: dateTimeLocalValue(new Date()) }])}>
+          <span className="material-symbols-outlined" aria-hidden="true">add</span>添加指标记录
+        </button>
+        <div className="dialog-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>取消</button>
+          <button className="primary-button inline" type="submit">保存记录</button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
