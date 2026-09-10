@@ -284,6 +284,29 @@ button.event-row:hover, .event-row.selected, .good-night-button:hover { border-c
 .event-form input[type="range"] { padding: 0; accent-color: var(--indigo); }
 .field-hint { color: var(--faint); font-size: .75rem; font-weight: 500; line-height: 1.5; }
 .form-error { margin: 0; border-radius: 9px; background: #fef2f2; padding: 9px 11px; color: #dc2626; font-size: .78rem; }
+.timeline-edit-button { min-height: 40px; }
+.timeline-editor-copy { margin: 0 0 14px; }
+.timeline-edit-list { display: grid; gap: 9px; max-height: 48vh; overflow-y: auto; padding-right: 3px; }
+.timeline-edit-row { display: grid; grid-template-columns: 28px minmax(145px, 1fr) 112px 24px 112px 34px; align-items: center; gap: 8px; border: 1px solid var(--line-soft); border-radius: 13px; background: #fbfcff; padding: 10px; }
+.timeline-edit-row.active { border-color: #fde68a; background: #fffbeb; }
+.timeline-edit-order { display: grid; width: 25px; height: 25px; place-items: center; border-radius: 8px; background: #eef2ff; color: #4f46e5; font-size: .72rem; font-weight: 800; }
+.timeline-edit-event { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; }
+.timeline-edit-event > .material-symbols-outlined { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 9px; background: var(--indigo-soft); color: var(--indigo); font-size: 19px; }
+.timeline-edit-event strong, .timeline-edit-event small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-edit-event strong { color: #334155; font-size: .84rem; }
+.timeline-edit-event small { margin-top: 2px; color: var(--faint); font-size: .7rem; }
+.timeline-edit-row label, .timeline-insert-panel label { display: grid; gap: 4px; color: var(--muted); font-size: .7rem; font-weight: 700; }
+.timeline-edit-row input, .timeline-insert-panel input { width: 100%; min-width: 0; height: 38px; border: 1px solid var(--line); border-radius: 9px; outline: 0; background: #fff; padding: 0 8px; color: #334155; font-weight: 650; }
+.timeline-edit-row input:focus, .timeline-insert-panel input:focus { border-color: #a5b4fc; box-shadow: 0 0 0 3px #eef2ff; }
+.timeline-time-link { color: #a5b4fc; font-size: 19px; text-align: center; }
+.timeline-now-field { display: grid; height: 38px; place-items: center; border: 1px solid #fde68a; border-radius: 9px; background: #fff; color: #b45309; font-size: .78rem; }
+.timeline-add-segment { justify-self: start; margin-top: 12px; }
+.timeline-insert-panel { display: grid; grid-template-columns: minmax(140px, 1fr) 112px 112px auto 34px; align-items: end; gap: 8px; margin-top: 12px; border: 1px dashed #c7d2fe; border-radius: 13px; background: #f8faff; padding: 11px; }
+.timeline-insert-panel > div strong, .timeline-insert-panel > div small { display: block; }
+.timeline-insert-panel > div strong { color: #3730a3; font-size: .84rem; }
+.timeline-insert-panel > div small { margin-top: 3px; color: var(--muted); font-size: .72rem; }
+.timeline-event-picker { display: grid; gap: 14px; }
+.picker-back { justify-self: start; }
 .range-value { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 29px; border-radius: 8px; background: var(--indigo-soft); color: #4338ca; }
 .toggle-line { grid-template-columns: 20px 1fr; align-items: center; }
 .toggle-line input { min-height: 20px; accent-color: var(--indigo); }
@@ -401,6 +424,8 @@ button.event-row:hover, .event-row.selected, .good-night-button:hover { border-c
   .chooser, .timeline, .panel, .analytics { border-radius: 16px; padding: 18px; }
   .section-head, .chart-toolbar { align-items: flex-start; flex-direction: column; }
   .timeline-tools { width: 100%; justify-content: space-between; }
+  .timeline-tools { flex-wrap: wrap; }
+  .timeline-edit-button { flex: 1 1 100%; }
   .calendar-anchor { min-width: 0; }
   .timeline-zoom-controls { grid-template-columns: 40px 52px 40px; }
   .timeline-zoom-controls .icon-only { width: 40px; min-height: 40px; height: 40px; }
@@ -434,6 +459,17 @@ button.event-row:hover, .event-row.selected, .good-night-button:hover { border-c
   .modal-backdrop { align-items: end; padding: 10px; }
   .modal-card, .modal-card.wide { width: 100%; max-height: calc(100dvh - 22px); border-radius: 22px; padding: 18px; }
   .metric-record-row { grid-template-columns: minmax(0, 1fr) 80px 32px; }
+  .timeline-edit-row { grid-template-columns: 28px minmax(0, 1fr) 22px minmax(0, 1fr) 34px; gap: 7px; }
+  .timeline-edit-order { grid-column: 1; grid-row: 1; }
+  .timeline-edit-event { grid-column: 2 / 5; grid-row: 1; }
+  .timeline-edit-row > .event-tool { grid-column: 5; grid-row: 1; }
+  .timeline-edit-row label:first-of-type { grid-column: 2; grid-row: 2; }
+  .timeline-time-link { grid-column: 3; grid-row: 2; }
+  .timeline-edit-row label:last-of-type { grid-column: 4; grid-row: 2; }
+  .timeline-insert-panel { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px; }
+  .timeline-insert-panel > div { grid-column: 1 / -1; }
+  .timeline-insert-panel > .primary-button { grid-column: 1 / 3; }
+  .timeline-insert-panel > .icon-only { grid-column: 3; }
 }
 
 @media (max-width: 420px) {

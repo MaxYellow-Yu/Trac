@@ -50,6 +50,8 @@ type Segment = {
   durationMs: number;
 };
 
+type TimelineDraftItem = Segment & { active?: boolean };
+
 type PersistedState = {
   events: TracEvent[];
   segments: Segment[];
@@ -228,6 +230,15 @@ function dateTimeLocalValue(date: Date) {
   const hours = String(date.getHours()).padStart(2, '0');
   const minutes = String(date.getMinutes()).padStart(2, '0');
   return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function timeInputValue(date: string | Date) {
+  const target = new Date(date);
+  return `${String(target.getHours()).padStart(2, '0')}:${String(target.getMinutes()).padStart(2, '0')}`;
+}
+
+function timeOnDate(date: string, time: string) {
+  return new Date(`${date}T${time}:00`);
 }
 
 function formatDateLabel(date: string | Date) {
@@ -725,6 +736,52 @@ export default function Home() {
     }
   }
 
+  function saveTimeline(date: string, drafts: TimelineDraftItem[]) {
+    const dayStart = new Date(`${date}T00:00:00`);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+    const belongsToDay = (value: string) => {
+      const start = new Date(value);
+      return start >= dayStart && start < dayEnd;
+    };
+    const oldDaySegments = segments.filter((segment) => belongsToDay(segment.start));
+    const nextDaySegments: Segment[] = drafts
+      .filter((item) => !item.active)
+      .map((item) => ({
+        id: item.id,
+        eventId: item.eventId,
+        eventName: item.eventName,
+        eventType: item.eventType,
+        start: item.start,
+        end: item.end,
+        durationMs: Math.max(0, new Date(item.end).getTime() - new Date(item.start).getTime()),
+      }));
+    const totals = (items: Segment[]) => items.reduce<Record<string, number>>((result, item) => {
+      result[item.eventId] = (result[item.eventId] || 0) + item.durationMs;
+      return result;
+    }, {});
+    const oldTotals = totals(oldDaySegments);
+    const nextTotals = totals(nextDaySegments);
+    const affectedIds = new Set([...Object.keys(oldTotals), ...Object.keys(nextTotals)]);
+
+    setSegments((current) => [...current.filter((segment) => !belongsToDay(segment.start)), ...nextDaySegments]);
+    setEvents((current) => current.map((item) => affectedIds.has(item.id)
+      ? { ...item, totalMs: Math.max(0, item.totalMs - (oldTotals[item.id] || 0) + (nextTotals[item.id] || 0)) }
+      : item));
+
+    if (date === dateInputValue(new Date())) {
+      const activeDraft = drafts.find((item) => item.active);
+      const activeStartedBeforeThisDay = activeStartedAt && new Date(activeStartedAt) < dayStart;
+      if (activeDraft) {
+        setActiveEventId(activeDraft.eventId);
+        setActiveStartedAt(activeDraft.start);
+      } else if (!activeStartedBeforeThisDay) {
+        setActiveEventId(null);
+        setActiveStartedAt(null);
+      }
+    }
+  }
+
   function reorder(targetId: string) {
     if (!draggingId || draggingId === targetId) return;
     setEvents((current) => {
@@ -779,10 +836,12 @@ export default function Home() {
           activeEvent={activeEvent}
           activeStartedAt={activeStartedAt}
           elapsedMs={elapsedMs}
+          events={events}
           segments={segments}
           onEnd={requestEnd}
           onCustomEnd={openCustomEnd}
           onMorning={() => setSwitchOpen(true)}
+          onSaveTimeline={saveTimeline}
         />
       )}
 
@@ -900,14 +959,16 @@ export default function Home() {
   );
 }
 
-function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, onCustomEnd, onMorning }: {
+function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, segments, onEnd, onCustomEnd, onMorning, onSaveTimeline }: {
   activeEvent: TracEvent | null;
   activeStartedAt: string | null;
   elapsedMs: number;
+  events: TracEvent[];
   segments: Segment[];
   onEnd: () => void;
   onCustomEnd: () => void;
   onMorning: () => void;
+  onSaveTimeline: (date: string, items: TimelineDraftItem[]) => void;
 }) {
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [selectedDate, setSelectedDate] = useState(() => dateInputValue(new Date()));
@@ -919,10 +980,41 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, 
     return date;
   });
   const [endMenuOpen, setEndMenuOpen] = useState(false);
+  const [timelineEditorOpen, setTimelineEditorOpen] = useState(false);
+  const [timelineDraft, setTimelineDraft] = useState<TimelineDraftItem[]>([]);
   const todayDate = dateInputValue(new Date());
   const selectedIsToday = selectedDate === todayDate;
   function adjustTimelineZoom(delta: number) {
     setTimelineZoom((current) => Math.min(3.5, Math.max(1, Math.round((current + delta) * 4) / 4)));
+  }
+
+  function openTimelineEditor() {
+    const dayStart = new Date(`${selectedDate}T00:00:00`);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+    const items: TimelineDraftItem[] = segments
+      .filter((segment) => {
+        const start = new Date(segment.start);
+        return start >= dayStart && start < dayEnd;
+      })
+      .map((segment) => ({ ...segment, active: false }));
+    if (selectedIsToday && activeEvent && activeStartedAt) {
+      const activeStart = new Date(activeStartedAt);
+      if (activeStart >= dayStart && activeStart < dayEnd) {
+        items.push({
+          id: 'active',
+          eventId: activeEvent.id,
+          eventName: activeEvent.name,
+          eventType: activeEvent.type,
+          start: activeStartedAt,
+          end: new Date().toISOString(),
+          durationMs: Date.now() - activeStart.getTime(),
+          active: true,
+        });
+      }
+    }
+    setTimelineDraft(items.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime()));
+    setTimelineEditorOpen(true);
   }
 
   return (
@@ -972,6 +1064,10 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, 
             <h2>{selectedIsToday ? '今日轨迹' : `${formatDateLabel(`${selectedDate}T00:00:00`)}轨迹`}</h2>
           </div>
           <div className="timeline-tools">
+            <button className="secondary-button timeline-edit-button" onClick={openTimelineEditor}>
+              <span className="material-symbols-outlined" aria-hidden="true">edit</span>
+              <span>编辑</span>
+            </button>
             <div className="calendar-anchor">
               <button
                 className={`date-picker-trigger ${selectedIsToday ? 'today' : ''}`}
@@ -1014,7 +1110,256 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, segments, onEnd, 
         </div>
         <DayTimeline activeEvent={activeEvent} activeStartedAt={activeStartedAt} elapsedMs={elapsedMs} segments={segments} selectedDate={selectedDate} zoom={timelineZoom} onZoom={adjustTimelineZoom} />
       </section>
+
+      <TimelineEditorModal
+        open={timelineEditorOpen}
+        selectedDate={selectedDate}
+        items={timelineDraft}
+        setItems={setTimelineDraft}
+        events={events}
+        onSave={() => {
+          onSaveTimeline(selectedDate, timelineDraft);
+          setTimelineEditorOpen(false);
+        }}
+        onClose={() => setTimelineEditorOpen(false)}
+      />
     </div>
+  );
+}
+
+function TimelineEditorModal({ open, selectedDate, items, setItems, events, onSave, onClose }: {
+  open: boolean;
+  selectedDate: string;
+  items: TimelineDraftItem[];
+  setItems: (items: TimelineDraftItem[]) => void;
+  events: TracEvent[];
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const [insertOpen, setInsertOpen] = useState(false);
+  const [insertStart, setInsertStart] = useState('');
+  const [insertEnd, setInsertEnd] = useState('');
+  const [pendingInsert, setPendingInsert] = useState<{ start: Date; end: Date } | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setInsertOpen(false);
+    setInsertStart('');
+    setInsertEnd('');
+    setPendingInsert(null);
+    setError('');
+  }, [open, selectedDate]);
+
+  function withDurations(next: TimelineDraftItem[]) {
+    return next
+      .map((item) => ({ ...item, durationMs: Math.max(0, new Date(item.end).getTime() - new Date(item.start).getTime()) }))
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+  }
+
+  function changeBoundary(index: number, edge: 'start' | 'end', value: string) {
+    const boundary = timeOnDate(selectedDate, value);
+    if (Number.isNaN(boundary.getTime())) return;
+    const next = items.map((item) => ({ ...item }));
+    if (edge === 'start') {
+      next[index].start = boundary.toISOString();
+      if (index > 0) next[index - 1].end = boundary.toISOString();
+    } else {
+      next[index].end = boundary.toISOString();
+      if (index < next.length - 1) next[index + 1].start = boundary.toISOString();
+    }
+    setError('');
+    setItems(withDurations(next));
+  }
+
+  function removeItem(index: number) {
+    const next = items.map((item) => ({ ...item }));
+    const [removed] = next.splice(index, 1);
+    const previous = next[index - 1];
+    const following = next[index];
+    if (previous && following) {
+      const midpoint = new Date(Math.round((new Date(removed.start).getTime() + new Date(removed.end).getTime()) / 120000) * 60000).toISOString();
+      previous.end = midpoint;
+      following.start = midpoint;
+    } else if (previous) {
+      previous.end = removed.end;
+      if (removed.active) {
+        previous.active = true;
+        previous.id = 'active';
+      }
+    } else if (following) {
+      following.start = removed.start;
+    }
+    setError('');
+    setItems(withDurations(next));
+  }
+
+  function requestInsert() {
+    const start = timeOnDate(selectedDate, insertStart);
+    const end = timeOnDate(selectedDate, insertEnd);
+    const now = new Date();
+    if (!insertStart || !insertEnd || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+      setError('插入事件的结束时间必须晚于开始时间。');
+      return;
+    }
+    if (selectedDate === dateInputValue(now) && end > now) {
+      setError('插入事件的结束时间不能晚于当前时间。');
+      return;
+    }
+    setError('');
+    setPendingInsert({ start, end });
+  }
+
+  function insertEvent(chosen: TracEvent) {
+    if (!pendingInsert) return;
+    const { start, end } = pendingInsert;
+    const next: TimelineDraftItem[] = [];
+    items.forEach((item) => {
+      const itemStart = new Date(item.start);
+      const itemEnd = new Date(item.end);
+      if (itemEnd <= start || itemStart >= end) {
+        next.push({ ...item });
+        return;
+      }
+      const hasLeft = itemStart < start;
+      const hasRight = itemEnd > end;
+      if (hasLeft) {
+        next.push({
+          ...item,
+          id: item.active ? makeId('segment') : item.id,
+          end: start.toISOString(),
+          active: false,
+        });
+      }
+      if (hasRight) {
+        next.push({
+          ...item,
+          id: item.active ? 'active' : hasLeft ? makeId('segment') : item.id,
+          start: end.toISOString(),
+          active: item.active,
+        });
+      }
+    });
+    next.push({
+      id: makeId('segment'),
+      eventId: chosen.id,
+      eventName: chosen.name,
+      eventType: chosen.type,
+      start: start.toISOString(),
+      end: end.toISOString(),
+      durationMs: end.getTime() - start.getTime(),
+      active: false,
+    });
+    setItems(withDurations(next));
+    setPendingInsert(null);
+    setInsertOpen(false);
+    setInsertStart('');
+    setInsertEnd('');
+  }
+
+  function validateAndSave() {
+    const ordered = [...items].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime());
+    for (let index = 0; index < ordered.length; index += 1) {
+      const item = ordered[index];
+      const start = new Date(item.start);
+      const end = new Date(item.end);
+      if (end <= start) {
+        setError(`“${item.eventName}”的结束时间必须晚于开始时间。`);
+        return;
+      }
+      if (index > 0 && start < new Date(ordered[index - 1].end)) {
+        setError(`“${item.eventName}”与前一事件的时间发生重叠。`);
+        return;
+      }
+    }
+    onSave();
+  }
+
+  return (
+    <Dialog open={open} title={`编辑 ${formatDateLabel(`${selectedDate}T00:00:00`)}轨迹`} icon="edit_calendar" onClose={onClose} wide>
+      {pendingInsert ? (
+        <div className="timeline-event-picker">
+          <button className="secondary-button picker-back" onClick={() => setPendingInsert(null)}>
+            <span className="material-symbols-outlined" aria-hidden="true">arrow_back</span>
+            返回时间设置
+          </button>
+          <p className="dialog-copy">选择 {insertStart}–{insertEnd} 期间进行的事件。原轨迹会自动为这一时段腾出空间。</p>
+          <div className="event-sections modal-sections">
+            {sectionOrder.map((section) => {
+              const sectionEvents = events.filter(section.filter);
+              return (
+                <div className="event-section" key={section.key}>
+                  <h3>{section.label}</h3>
+                  {sectionEvents.length === 0 ? <p className="empty">暂无事件</p> : (
+                    <div className="event-list">
+                      {sectionEvents.map((item) => (
+                        <button className="event-row" key={item.id} onClick={() => insertEvent(item)}>
+                          <span className="material-symbols-outlined" aria-hidden="true">{typeMeta[item.type].icon}</span>
+                          <span><strong>{item.name}</strong><small>{eventMetaLine(item)}</small></span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="dialog-copy timeline-editor-copy">调整相邻事件的时间点时，两侧会同步衔接；删除事件后，相邻事件会自动补齐空出的时段。</p>
+          <div className="timeline-edit-list">
+            {items.length === 0 ? <p className="empty">当天还没有事件，可以先插入一段轨迹。</p> : items.map((item, index) => (
+              <article className={`timeline-edit-row ${item.active ? 'active' : ''}`} key={item.id}>
+                <span className="timeline-edit-order">{index + 1}</span>
+                <span className="timeline-edit-event">
+                  <span className="material-symbols-outlined" aria-hidden="true">{typeMeta[item.eventType].icon}</span>
+                  <span><strong>{item.eventName}</strong><small>{item.active ? '当前事件' : typeMeta[item.eventType].label}</small></span>
+                </span>
+                <label>
+                  开始
+                  <input type="time" value={timeInputValue(item.start)} onChange={(event) => changeBoundary(index, 'start', event.target.value)} />
+                </label>
+                <span className="timeline-time-link material-symbols-outlined" aria-hidden="true">sync_alt</span>
+                <label>
+                  结束
+                  {item.active ? <span className="timeline-now-field">现在</span> : <input type="time" value={timeInputValue(item.end)} onChange={(event) => changeBoundary(index, 'end', event.target.value)} />}
+                </label>
+                <button className="icon-only event-tool danger" onClick={() => removeItem(index)} aria-label={`从轨迹删除 ${item.eventName}`}>
+                  <span className="material-symbols-outlined" aria-hidden="true">delete</span>
+                </button>
+              </article>
+            ))}
+          </div>
+
+          {insertOpen ? (
+            <div className="timeline-insert-panel">
+              <div>
+                <strong>插入事件</strong>
+                <small>先设置要腾出的时间区间</small>
+              </div>
+              <label>开始<input type="time" value={insertStart} onChange={(event) => { setInsertStart(event.target.value); setError(''); }} /></label>
+              <label>结束<input type="time" value={insertEnd} onChange={(event) => { setInsertEnd(event.target.value); setError(''); }} /></label>
+              <button className="primary-button inline" onClick={requestInsert}>选择事件</button>
+              <button className="icon-only" onClick={() => { setInsertOpen(false); setError(''); }} aria-label="取消插入">
+                <span className="material-symbols-outlined" aria-hidden="true">close</span>
+              </button>
+            </div>
+          ) : (
+            <button className="secondary-button timeline-add-segment" onClick={() => setInsertOpen(true)}>
+              <span className="material-symbols-outlined" aria-hidden="true">add</span>
+              插入事件
+            </button>
+          )}
+
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <div className="dialog-actions">
+            <button className="secondary-button" onClick={onClose}>取消</button>
+            <button className="primary-button inline" onClick={validateAndSave}>保存轨迹</button>
+          </div>
+        </>
+      )}
+    </Dialog>
   );
 }
 
