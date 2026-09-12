@@ -9,6 +9,7 @@ type Importance = 'important' | 'unimportant';
 type Period = 'day' | 'week' | 'month';
 type TrendMode = 'workload' | 'event' | 'tag' | 'category' | 'habit';
 type TrendSeries = { label: string; color: string; values: number[] };
+type Category = { name: string; color: string };
 type MetricRecordDraft = { value: string; at: string };
 type EventDraft = {
   type: EventType;
@@ -59,7 +60,7 @@ type PersistedState = {
   activeStartedAt: string | null;
   trendMode?: TrendMode;
   chartMode?: 'line' | 'heatmap';
-  categories?: string[];
+  categories?: (string | Category)[];
   tags?: string[];
 };
 
@@ -131,7 +132,8 @@ const editableSectionOrder: { key: string; label: string; filter: (event: TracEv
   { key: 'completed', label: '今日已完成', filter: (event) => event.type === 'todo' && Boolean(event.completed && event.completedAt && isToday(event.completedAt)) },
 ];
 
-const defaultCategories = ['默认', '学习', '作业', '预习', '健康', '习惯'];
+const categoryPalette = ['#6366f1', '#0ea5e9', '#f59e0b', '#ec4899', '#10b981', '#8b5cf6', '#ef4444', '#14b8a6'];
+const defaultCategories: Category[] = ['默认', '学习', '作业', '预习', '健康', '习惯'].map((name, index) => ({ name, color: categoryPalette[index] }));
 const defaultTags = ['英语', '微积分', '作业', '演讲', '运动'];
 
 const seedEvents: TracEvent[] = [
@@ -278,8 +280,20 @@ function uniqueList(values: string[]) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
+function normalizeCategories(values: (string | Category)[], events: TracEvent[] = []) {
+  const names = uniqueList([...values.map((item) => typeof item === 'string' ? item : item.name), ...events.map((event) => event.category || '默认')]);
+  return names.map((name, index) => {
+    const existing = values.find((item) => typeof item !== 'string' && item.name === name) as Category | undefined;
+    return { name, color: existing?.color || categoryPalette[index % categoryPalette.length] };
+  });
+}
+
 function deriveCategories(events: TracEvent[]) {
-  return uniqueList([...defaultCategories, ...events.map((event) => event.category || '默认')]);
+  return normalizeCategories(defaultCategories, events);
+}
+
+function categoryColor(categories: Category[], name?: string) {
+  return categories.find((category) => category.name === (name || '默认'))?.color || categoryPalette[0];
 }
 
 function deriveTags(events: TracEvent[]) {
@@ -398,7 +412,7 @@ export default function Home() {
   const [page, setPage] = useState<AppPage>('record');
   const [events, setEvents] = useState<TracEvent[]>(seedEvents);
   const [segments, setSegments] = useState<Segment[]>([]);
-  const [categories, setCategories] = useState<string[]>(defaultCategories);
+  const [categories, setCategories] = useState<Category[]>(defaultCategories);
   const [tags, setTags] = useState<string[]>(defaultTags);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [activeStartedAt, setActiveStartedAt] = useState<string | null>(null);
@@ -442,7 +456,7 @@ export default function Home() {
       setActiveEventId(shouldClearSeedTimeline && hadSeedTimeline ? null : parsed.activeEventId ?? null);
       setActiveStartedAt(shouldClearSeedTimeline && hadSeedTimeline ? null : parsed.activeStartedAt ?? null);
       setTrendMode(parsed.trendMode || 'event');
-      setCategories(parsed.categories?.length ? parsed.categories : deriveCategories(savedEvents));
+      setCategories(parsed.categories?.length ? normalizeCategories(parsed.categories, savedEvents) : deriveCategories(savedEvents));
       setTags(parsed.tags?.length ? parsed.tags : deriveTags(savedEvents));
       if (shouldClearSeedTimeline) localStorage.setItem(SEED_TIMELINE_MIGRATION_KEY, '1');
     } catch {
@@ -651,7 +665,7 @@ export default function Home() {
 
   function openAddEvent() {
     setEditingId(null);
-    setDraft({ ...emptyDraft, category: categories[0] || '默认' });
+    setDraft({ ...emptyDraft, category: categories[0]?.name || '默认' });
     setEventModalOpen(true);
   }
 
@@ -669,7 +683,7 @@ export default function Home() {
       ...draft,
       name,
       tags: draft.type === 'daily' ? [] : draft.tags,
-      category: draft.type === 'daily' ? '默认' : draft.category || '默认',
+      category: draft.category || '默认',
     };
 
     if (editingId) {
@@ -798,20 +812,34 @@ export default function Home() {
   function addListItem() {
     const value = listInput.trim();
     if (!value || !listModal) return;
-    if (listModal === 'category') setCategories((current) => uniqueList([...current, value]));
+    if (listModal === 'category') setCategories((current) => current.some((item) => item.name === value) ? current : [...current, { name: value, color: categoryPalette[current.length % categoryPalette.length] }]);
     if (listModal === 'tag') setTags((current) => uniqueList([...current, value]));
     setListInput('');
   }
 
   function removeListItem(value: string) {
     if (listModal === 'category') {
-      setCategories((current) => current.filter((item) => item !== value));
+      setCategories((current) => current.filter((item) => item.name !== value));
       setEvents((current) => current.map((event) => (event.category === value ? { ...event, category: '默认' } : event)));
+      setDraft((current) => current.category === value ? { ...current, category: '默认' } : current);
     }
     if (listModal === 'tag') {
       setTags((current) => current.filter((item) => item !== value));
       setEvents((current) => current.map((event) => ({ ...event, tags: event.tags.filter((tag) => tag !== value) })));
     }
+  }
+
+  function moveListItem(kind: 'category' | 'tag', index: number, delta: number) {
+    const move = <T,>(current: T[]) => {
+      const target = index + delta;
+      if (target < 0 || target >= current.length) return current;
+      const next = [...current];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item);
+      return next;
+    };
+    if (kind === 'category') setCategories(move);
+    else setTags(move);
   }
 
   return (
@@ -837,6 +865,7 @@ export default function Home() {
           activeStartedAt={activeStartedAt}
           elapsedMs={elapsedMs}
           events={events}
+          categories={categories}
           segments={segments}
           onEnd={requestEnd}
           onCustomEnd={openCustomEnd}
@@ -848,6 +877,7 @@ export default function Home() {
       {page === 'events' && (
         <EventsPage
           events={events}
+          categories={categories}
           activeEventId={activeEventId}
           onAdd={openAddEvent}
           onEdit={openEditEvent}
@@ -887,7 +917,7 @@ export default function Home() {
         />
       )}
 
-      <SwitchModal open={switchOpen} events={events} activeEventId={activeEventId} onPick={switchEvent} onAdd={openAddEvent} onGoodNight={sayGoodNight} onClose={cancelPendingSwitch} />
+      <SwitchModal open={switchOpen} events={events} categories={categories} activeEventId={activeEventId} onPick={switchEvent} onAdd={openAddEvent} onGoodNight={sayGoodNight} onClose={cancelPendingSwitch} />
 
       <Dialog open={completionOpen} title="事件完成了吗？" icon="task_alt" onClose={() => answerCompletion(false)}>
         <p className="dialog-copy">结束“{activeEvent?.name}”前，先记录它是否已经完成。日常和习惯事件会继续保存本段时间。</p>
@@ -917,6 +947,8 @@ export default function Home() {
         editing={Boolean(editingId)}
         categories={categories}
         tags={tags}
+        onAddCategory={() => { setListModal('category'); setListInput(''); }}
+        onAddTag={() => { setListModal('tag'); setListInput(''); }}
         onSubmit={saveEvent}
         onDelete={editingId ? () => deleteEvent(editingId) : undefined}
         onClose={() => setEventModalOpen(false)}
@@ -948,22 +980,26 @@ export default function Home() {
 
       <ListEditorModal
         kind={listModal}
-        items={listModal === 'category' ? categories : tags}
+        categories={categories}
+        tags={tags}
         input={listInput}
         setInput={setListInput}
         onAdd={addListItem}
         onRemove={removeListItem}
+        onMove={moveListItem}
+        onColorChange={(name, color) => setCategories((current) => current.map((item) => item.name === name ? { ...item, color } : item))}
         onClose={() => setListModal(null)}
       />
     </main>
   );
 }
 
-function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, segments, onEnd, onCustomEnd, onMorning, onSaveTimeline }: {
+function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, categories, segments, onEnd, onCustomEnd, onMorning, onSaveTimeline }: {
   activeEvent: TracEvent | null;
   activeStartedAt: string | null;
   elapsedMs: number;
   events: TracEvent[];
+  categories: Category[];
   segments: Segment[];
   onEnd: () => void;
   onCustomEnd: () => void;
@@ -1108,7 +1144,7 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, segments,
             </div>
           </div>
         </div>
-        <DayTimeline activeEvent={activeEvent} activeStartedAt={activeStartedAt} elapsedMs={elapsedMs} segments={segments} selectedDate={selectedDate} zoom={timelineZoom} onZoom={adjustTimelineZoom} />
+        <DayTimeline activeEvent={activeEvent} activeStartedAt={activeStartedAt} elapsedMs={elapsedMs} events={events} categories={categories} segments={segments} selectedDate={selectedDate} zoom={timelineZoom} onZoom={adjustTimelineZoom} />
       </section>
 
       <TimelineEditorModal
@@ -1117,6 +1153,7 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, segments,
         items={timelineDraft}
         setItems={setTimelineDraft}
         events={events}
+        categories={categories}
         onSave={() => {
           onSaveTimeline(selectedDate, timelineDraft);
           setTimelineEditorOpen(false);
@@ -1127,12 +1164,13 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, segments,
   );
 }
 
-function TimelineEditorModal({ open, selectedDate, items, setItems, events, onSave, onClose }: {
+function TimelineEditorModal({ open, selectedDate, items, setItems, events, categories, onSave, onClose }: {
   open: boolean;
   selectedDate: string;
   items: TimelineDraftItem[];
   setItems: (items: TimelineDraftItem[]) => void;
   events: TracEvent[];
+  categories: Category[];
   onSave: () => void;
   onClose: () => void;
 }) {
@@ -1140,6 +1178,7 @@ function TimelineEditorModal({ open, selectedDate, items, setItems, events, onSa
   const [insertStart, setInsertStart] = useState('');
   const [insertEnd, setInsertEnd] = useState('');
   const [pendingInsert, setPendingInsert] = useState<{ start: Date; end: Date } | null>(null);
+  const [replaceIndex, setReplaceIndex] = useState<number | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -1148,6 +1187,7 @@ function TimelineEditorModal({ open, selectedDate, items, setItems, events, onSa
     setInsertStart('');
     setInsertEnd('');
     setPendingInsert(null);
+    setReplaceIndex(null);
     setError('');
   }, [open, selectedDate]);
 
@@ -1210,7 +1250,18 @@ function TimelineEditorModal({ open, selectedDate, items, setItems, events, onSa
     setPendingInsert({ start, end });
   }
 
-  function insertEvent(chosen: TracEvent) {
+  function selectTimelineEvent(chosen: TracEvent) {
+    if (replaceIndex !== null) {
+      const next = items.map((item, index) => index === replaceIndex ? {
+        ...item,
+        eventId: chosen.id,
+        eventName: chosen.name,
+        eventType: chosen.type,
+      } : item);
+      setItems(withDurations(next));
+      setReplaceIndex(null);
+      return;
+    }
     if (!pendingInsert) return;
     const { start, end } = pendingInsert;
     const next: TimelineDraftItem[] = [];
@@ -1277,23 +1328,25 @@ function TimelineEditorModal({ open, selectedDate, items, setItems, events, onSa
 
   return (
     <Dialog open={open} title={`编辑 ${formatDateLabel(`${selectedDate}T00:00:00`)}轨迹`} icon="edit_calendar" onClose={onClose} wide>
-      {pendingInsert ? (
+      {pendingInsert || replaceIndex !== null ? (
         <div className="timeline-event-picker">
-          <button className="secondary-button picker-back" onClick={() => setPendingInsert(null)}>
+          <button className="secondary-button picker-back" onClick={() => { setPendingInsert(null); setReplaceIndex(null); }}>
             <span className="material-symbols-outlined" aria-hidden="true">arrow_back</span>
             返回时间设置
           </button>
-          <p className="dialog-copy">选择 {insertStart}–{insertEnd} 期间进行的事件。原轨迹会自动为这一时段腾出空间。</p>
+          <p className="dialog-copy">{replaceIndex !== null
+            ? `选择用于替换“${items[replaceIndex]?.eventName || ''}”的新事件，原起止时间保持不变。`
+            : `选择 ${insertStart}–${insertEnd} 期间进行的事件。原轨迹会自动为这一时段腾出空间。`}</p>
           <div className="event-sections modal-sections">
             {sectionOrder.map((section) => {
               const sectionEvents = events.filter(section.filter);
               return (
-                <div className="event-section" key={section.key}>
+                <div className={`event-section ${section.key === 'daily' ? 'compact-daily-section' : ''}`} key={section.key}>
                   <h3>{section.label}</h3>
                   {sectionEvents.length === 0 ? <p className="empty">暂无事件</p> : (
-                    <div className="event-list">
+                    <div className={`event-list ${section.key === 'daily' ? 'compact-daily-grid' : ''}`}>
                       {sectionEvents.map((item) => (
-                        <button className="event-row" key={item.id} onClick={() => insertEvent(item)}>
+                        <button className={`event-row category-colored ${section.key === 'daily' ? 'daily-tile' : ''}`} style={{ '--category-color': categoryColor(categories, item.category) } as React.CSSProperties} key={item.id} onClick={() => selectTimelineEvent(item)}>
                           <span className="material-symbols-outlined" aria-hidden="true">{typeMeta[item.type].icon}</span>
                           <span><strong>{item.name}</strong><small>{eventMetaLine(item)}</small></span>
                         </button>
@@ -1325,9 +1378,14 @@ function TimelineEditorModal({ open, selectedDate, items, setItems, events, onSa
                   结束
                   {item.active ? <span className="timeline-now-field">现在</span> : <input type="time" value={timeInputValue(item.end)} onChange={(event) => changeBoundary(index, 'end', event.target.value)} />}
                 </label>
-                <button className="icon-only event-tool danger" onClick={() => removeItem(index)} aria-label={`从轨迹删除 ${item.eventName}`}>
-                  <span className="material-symbols-outlined" aria-hidden="true">delete</span>
-                </button>
+                <span className="timeline-row-actions">
+                  <button className="icon-only event-tool" onClick={() => setReplaceIndex(index)} aria-label={`更改 ${item.eventName} 对应的事件`}>
+                    <span className="material-symbols-outlined" aria-hidden="true">swap_horiz</span>
+                  </button>
+                  <button className="icon-only event-tool danger" onClick={() => removeItem(index)} aria-label={`从轨迹删除 ${item.eventName}`}>
+                    <span className="material-symbols-outlined" aria-hidden="true">delete</span>
+                  </button>
+                </span>
               </article>
             ))}
           </div>
@@ -1408,10 +1466,12 @@ function CalendarPopover({ month, selectedDate, maxDate, onMonthChange, onSelect
   );
 }
 
-function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments, selectedDate, zoom, onZoom }: {
+function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, events, categories, segments, selectedDate, zoom, onZoom }: {
   activeEvent: TracEvent | null;
   activeStartedAt: string | null;
   elapsedMs: number;
+  events: TracEvent[];
+  categories: Category[];
   segments: Segment[];
   selectedDate: string;
   zoom: number;
@@ -1435,6 +1495,7 @@ function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments, select
   const intervals = [
     ...selectedSegments.map((segment) => ({
       id: segment.id,
+      eventId: segment.eventId,
       eventName: segment.eventName,
       eventType: segment.eventType,
       start: new Date(segment.start),
@@ -1445,6 +1506,7 @@ function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments, select
     ...(selectedIsToday && activeEvent && activeStartedAt
       ? [{
           id: 'active',
+          eventId: activeEvent.id,
           eventName: activeEvent.name,
           eventType: activeEvent.type,
           start: new Date(activeStartedAt),
@@ -1488,7 +1550,7 @@ function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments, select
             <span
               className={`day-period ${item.active ? 'active' : ''} ${expandedId === item.id ? 'highlighted' : ''}`}
               key={`period-${item.id}`}
-              style={{ top: topFor(item.start), height: `${Math.max(((item.end.getTime() - item.start.getTime()) / dayMs) * 100, 0.35)}%` }}
+              style={{ top: topFor(item.start), height: `${Math.max(((item.end.getTime() - item.start.getTime()) / dayMs) * 100, 0.35)}%`, '--category-color': categoryColor(categories, events.find((event) => event.id === item.eventId)?.category) } as React.CSSProperties}
               onMouseEnter={() => setExpandedId(item.id)}
               onMouseLeave={() => setExpandedId(null)}
             />
@@ -1505,7 +1567,7 @@ function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments, select
               <article
                 className={`day-event ${item.active ? 'active' : ''} ${expanded ? 'expanded' : ''}`}
                 key={item.id}
-                style={{ top: topFor(midpoint) }}
+                style={{ top: topFor(midpoint), '--category-color': categoryColor(categories, events.find((event) => event.id === item.eventId)?.category) } as React.CSSProperties}
                 tabIndex={0}
                 onMouseEnter={() => setExpandedId(item.id)}
                 onMouseLeave={() => setExpandedId(null)}
@@ -1527,8 +1589,9 @@ function DayTimeline({ activeEvent, activeStartedAt, elapsedMs, segments, select
   );
 }
 
-function EventsPage({ events, activeEventId, onAdd, onEdit, onEditMetrics, onEditCategories, onEditTags, onToggleDone, onDelete, draggingId, setDraggingId, reorder, moveEvent }: {
+function EventsPage({ events, categories, activeEventId, onAdd, onEdit, onEditMetrics, onEditCategories, onEditTags, onToggleDone, onDelete, draggingId, setDraggingId, reorder, moveEvent }: {
   events: TracEvent[];
+  categories: Category[];
   activeEventId: string | null;
   onAdd: () => void;
   onEdit: (event: TracEvent) => void;
@@ -1566,7 +1629,8 @@ function EventsPage({ events, activeEventId, onAdd, onEdit, onEditMetrics, onEdi
                   <div className="event-list">
                     {items.map((event, index) => (
                       <article
-                        className={`event-row editable ${activeEventId === event.id ? 'selected' : ''} ${draggingId === event.id ? 'dragging' : ''}`}
+                        className={`event-row editable category-colored ${activeEventId === event.id ? 'selected' : ''} ${draggingId === event.id ? 'dragging' : ''}`}
+                        style={{ '--category-color': categoryColor(categories, event.category) } as React.CSSProperties}
                         key={event.id}
                         draggable
                         onDragStart={() => setDraggingId(event.id)}
@@ -1638,11 +1702,16 @@ function StatsPage({ period, setPeriod, anchorDate, onShiftAnchor, trendMode, se
     { value: 'category', label: '分类耗时' },
     { value: 'habit', label: '习惯指标' },
   ];
-  const [trendItem, setTrendItem] = useState('');
+  const [trendItems, setTrendItems] = useState<string[]>([]);
   useEffect(() => {
-    if (!trend.series.some((item) => item.label === trendItem)) setTrendItem(trend.series[0]?.label || '');
-  }, [trend.series, trendItem]);
-  const selectedSeries = trend.series.find((item) => item.label === trendItem) || trend.series[0];
+    const available = new Set(trend.series.map((item) => item.label));
+    const valid = trendItems.filter((item) => available.has(item));
+    if (valid.length !== trendItems.length || (valid.length === 0 && trend.series.length > 0)) setTrendItems(valid.length ? valid : [trend.series[0].label]);
+  }, [trend.series, trendItems]);
+  const selectedSeries = trend.series.find((item) => item.label === trendItems[0]) || trend.series[0];
+  const selectedSeriesList = period === 'week'
+    ? trend.series.filter((item) => trendItems.includes(item.label))
+    : selectedSeries ? [selectedSeries] : [];
   const valueLabel = trendMode === 'workload' ? '工作量' : trendMode === 'habit' ? '指标值' : '分钟';
   const bounds = periodBounds(period, anchorDate);
   const rangeLabel = period === 'day' ? formatDateLabel(bounds.end) : `${formatDateLabel(bounds.start)} — ${formatDateLabel(bounds.end)}`;
@@ -1692,21 +1761,33 @@ function StatsPage({ period, setPeriod, anchorDate, onShiftAnchor, trendMode, se
                 </select>
               </label>
               {trendMode !== 'workload' && (
-                <label className="trend-selector">
-                  <span>具体项目</span>
-                  <select value={selectedSeries?.label || ''} onChange={(event) => setTrendItem(event.target.value)} disabled={!selectedSeries}>
-                    {trend.series.map((item) => <option value={item.label} key={item.label}>{item.label}</option>)}
-                  </select>
-                </label>
+                period === 'week' ? (
+                  <div className="trend-multi-selector">
+                    <span>具体项目（可多选）</span>
+                    <div className="trend-multi-options">
+                      {trend.series.map((item) => {
+                        const selected = trendItems.includes(item.label);
+                        return <button className={selected ? 'selected' : ''} key={item.label} onClick={() => setTrendItems((current) => selected ? (current.length > 1 ? current.filter((label) => label !== item.label) : current) : [...current, item.label])}><i style={{ background: item.color }} />{item.label}</button>;
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <label className="trend-selector">
+                    <span>具体项目</span>
+                    <select value={selectedSeries?.label || ''} onChange={(event) => setTrendItems([event.target.value])} disabled={!selectedSeries}>
+                      {trend.series.map((item) => <option value={item.label} key={item.label}>{item.label}</option>)}
+                    </select>
+                  </label>
+                )
               )}
             </div>
           </div>
-          {!selectedSeries ? (
+          {selectedSeriesList.length === 0 ? (
             <div className="trend-empty"><span className="material-symbols-outlined" aria-hidden="true">query_stats</span><p>该时间范围内暂无数据</p></div>
           ) : period === 'month' ? (
             <MonthHeatmap dates={trend.dateKeys} values={selectedSeries.values} itemLabel={selectedSeries.label} valueLabel={valueLabel} color={selectedSeries.color} />
           ) : (
-            <TrendChart labels={trend.labels} series={[selectedSeries]} valueLabel={valueLabel} />
+            <TrendChart labels={trend.labels} dates={trend.dateKeys} series={selectedSeriesList} valueLabel={valueLabel} />
           )}
         </div>
       )}
@@ -1720,9 +1801,10 @@ function StatsPage({ period, setPeriod, anchorDate, onShiftAnchor, trendMode, se
   );
 }
 
-function SwitchModal({ open, events, activeEventId, onPick, onAdd, onGoodNight, onClose }: {
+function SwitchModal({ open, events, categories, activeEventId, onPick, onAdd, onGoodNight, onClose }: {
   open: boolean;
   events: TracEvent[];
+  categories: Category[];
   activeEventId: string | null;
   onPick: (id: string) => void;
   onAdd: () => void;
@@ -1743,12 +1825,12 @@ function SwitchModal({ open, events, activeEventId, onPick, onAdd, onGoodNight, 
         {sectionOrder.map((section) => {
           const items = events.filter(section.filter);
           return (
-            <div className="event-section" key={section.key}>
+            <div className={`event-section ${section.key === 'daily' ? 'compact-daily-section' : ''}`} key={section.key}>
               <h3>{section.label}</h3>
               {items.length === 0 ? <p className="empty">暂无事件</p> : (
-                <div className="event-list">
+                <div className={`event-list ${section.key === 'daily' ? 'compact-daily-grid' : ''}`}>
                   {items.map((event) => (
-                    <button className={`event-row ${activeEventId === event.id ? 'selected' : ''}`} key={event.id} onClick={() => onPick(event.id)}>
+                    <button className={`event-row category-colored ${section.key === 'daily' ? 'daily-tile' : ''} ${activeEventId === event.id ? 'selected' : ''}`} style={{ '--category-color': categoryColor(categories, event.category) } as React.CSSProperties} key={event.id} onClick={() => onPick(event.id)}>
                       <span className="material-symbols-outlined" aria-hidden="true">{typeMeta[event.type].icon}</span>
                       <span>
                         <strong>{event.name}</strong>
@@ -1766,13 +1848,15 @@ function SwitchModal({ open, events, activeEventId, onPick, onAdd, onGoodNight, 
   );
 }
 
-function EventEditorModal({ open, draft, setDraft, editing, categories, tags, onSubmit, onDelete, onClose }: {
+function EventEditorModal({ open, draft, setDraft, editing, categories, tags, onAddCategory, onAddTag, onSubmit, onDelete, onClose }: {
   open: boolean;
   draft: EventDraft;
   setDraft: (draft: EventDraft) => void;
   editing: boolean;
-  categories: string[];
+  categories: Category[];
   tags: string[];
+  onAddCategory: () => void;
+  onAddTag: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onDelete?: () => void;
   onClose: () => void;
@@ -1796,20 +1880,20 @@ function EventEditorModal({ open, draft, setDraft, editing, categories, tags, on
           名称
           <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="例如 复习线性代数" autoFocus />
         </label>
+        <div className="field-block">
+          <span className="field-label-row"><span>分类</span><button type="button" className="field-add-button" onClick={onAddCategory} aria-label="增加分类"><span className="material-symbols-outlined" aria-hidden="true">add</span></button></span>
+          <div className="chip-grid">
+            {categories.map((category) => (
+              <button type="button" style={{ '--category-color': category.color } as React.CSSProperties} className={`choice-chip category-chip ${draft.category === category.name ? 'selected' : ''}`} key={category.name} onClick={() => setDraft({ ...draft, category: category.name })}>
+                <i />{category.name}
+              </button>
+            ))}
+          </div>
+        </div>
         {draft.type !== 'daily' && (
           <>
             <div className="field-block">
-              <span>分类</span>
-              <div className="chip-grid">
-                {categories.map((category) => (
-                  <button type="button" className={`choice-chip ${draft.category === category ? 'selected' : ''}`} key={category} onClick={() => setDraft({ ...draft, category })}>
-                    {category}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="field-block">
-              <span>标签</span>
+              <span className="field-label-row"><span>标签</span><button type="button" className="field-add-button" onClick={onAddTag} aria-label="增加标签"><span className="material-symbols-outlined" aria-hidden="true">add</span></button></span>
               <div className="chip-grid">
                 {tags.map((tag) => (
                   <button type="button" className={`choice-chip ${draft.tags.includes(tag) ? 'selected' : ''}`} key={tag} onClick={() => toggleTag(tag)}>
@@ -1870,15 +1954,19 @@ function EventEditorModal({ open, draft, setDraft, editing, categories, tags, on
   );
 }
 
-function ListEditorModal({ kind, items, input, setInput, onAdd, onRemove, onClose }: {
+function ListEditorModal({ kind, categories, tags, input, setInput, onAdd, onRemove, onMove, onColorChange, onClose }: {
   kind: 'category' | 'tag' | null;
-  items: string[];
+  categories: Category[];
+  tags: string[];
   input: string;
   setInput: (value: string) => void;
   onAdd: () => void;
   onRemove: (value: string) => void;
+  onMove: (kind: 'category' | 'tag', index: number, delta: number) => void;
+  onColorChange: (name: string, color: string) => void;
   onClose: () => void;
 }) {
+  const items = kind === 'category' ? categories.map((item) => item.name) : tags;
   return (
     <Dialog open={Boolean(kind)} title={kind === 'category' ? '编辑分类' : '编辑标签'} icon={kind === 'category' ? 'category' : 'sell'} onClose={onClose}>
       <div className="list-editor">
@@ -1886,14 +1974,23 @@ function ListEditorModal({ kind, items, input, setInput, onAdd, onRemove, onClos
           <input value={input} onChange={(event) => setInput(event.target.value)} placeholder={kind === 'category' ? '新分类名称' : '新标签名称'} />
           <button className="primary-button inline" onClick={onAdd}>添加</button>
         </div>
-        <div className="managed-list">
-          {items.map((item) => (
-            <span key={item}>
-              {item}
-              <button onClick={() => onRemove(item)} aria-label={`删除 ${item}`}>
+        <div className="managed-list sortable-managed-list">
+          {items.map((item, index) => (
+            <div className={`managed-row ${kind === 'category' ? '' : 'no-color'}`} key={item}>
+              <span className="managed-order-buttons">
+                <button disabled={index === 0} onClick={() => kind && onMove(kind, index, -1)} aria-label={`上移 ${item}`}><span className="material-symbols-outlined" aria-hidden="true">keyboard_arrow_up</span></button>
+                <button disabled={index === items.length - 1} onClick={() => kind && onMove(kind, index, 1)} aria-label={`下移 ${item}`}><span className="material-symbols-outlined" aria-hidden="true">keyboard_arrow_down</span></button>
+              </span>
+              {kind === 'category' && (
+                <label className="category-color-control" title={`设置 ${item} 的颜色`}>
+                  <input type="color" value={categories[index]?.color || categoryPalette[0]} onChange={(event) => onColorChange(item, event.target.value)} aria-label={`${item}的颜色`} />
+                </label>
+              )}
+              <strong>{item}</strong>
+              <button className="managed-delete" disabled={kind === 'category' && item === '默认'} onClick={() => onRemove(item)} aria-label={kind === 'category' && item === '默认' ? '默认分类不可删除' : `删除 ${item}`}>
                 <span className="material-symbols-outlined" aria-hidden="true">close</span>
               </button>
-            </span>
+            </div>
           ))}
         </div>
       </div>
@@ -1926,9 +2023,13 @@ function Dialog({ open, title, icon, onClose, children, wide = false }: {
   );
 }
 
-function TrendChart({ labels, series, valueLabel }: { labels: string[]; series: TrendSeries[]; valueLabel: string }) {
+function TrendChart({ labels, dates, series, valueLabel }: { labels: string[]; dates: string[]; series: TrendSeries[]; valueLabel: string }) {
+  const [selectedPoint, setSelectedPoint] = useState<{ label: string; index: number } | null>(null);
+  useEffect(() => {
+    if (selectedPoint && (!series.some((item) => item.label === selectedPoint.label) || selectedPoint.index >= labels.length)) setSelectedPoint(null);
+  }, [labels.length, selectedPoint, series]);
   if (series.length === 0) return <div className="trend-empty"><span className="material-symbols-outlined" aria-hidden="true">query_stats</span><p>该时间范围内暂无数据</p></div>;
-  const width = labels.length > 7 ? 1220 : 760;
+  const width = 700;
   const height = 270;
   const left = 48;
   const right = 18;
@@ -1946,7 +2047,7 @@ function TrendChart({ labels, series, valueLabel }: { labels: string[]; series: 
         {series.map((item) => <span key={item.label}><i style={{ background: item.color }} />{item.label}</span>)}
       </div>
       <div className="trend-scroll">
-        <svg className="trend-chart" viewBox={`0 0 ${width} ${height}`} style={{ minWidth: `${width}px` }} role="img" aria-label={`时间趋势，单位：${valueLabel}`}>
+        <svg className="trend-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`时间趋势，单位：${valueLabel}`}>
           {[0, .25, .5, .75, 1].map((ratio) => {
             const y = top + plotHeight - ratio * plotHeight;
             return <g key={ratio}><line x1={left} x2={width - right} y1={y} y2={y} /><text x={left - 8} y={y + 4} textAnchor="end">{Math.round(max * ratio * 10) / 10}</text></g>;
@@ -1957,12 +2058,21 @@ function TrendChart({ labels, series, valueLabel }: { labels: string[]; series: 
             return (
               <g key={item.label} style={{ color: item.color }}>
                 <polyline points={points} fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                {item.values.map((value, index) => <circle key={index} cx={xFor(index)} cy={yFor(value)} r="3.5"><title>{labels[index]} · {item.label}: {Math.round(value * 10) / 10} {valueLabel}</title></circle>)}
+                {item.values.map((value, index) => {
+                  const selected = selectedPoint?.label === item.label && selectedPoint.index === index;
+                  return <circle className={selected ? 'selected' : ''} role="button" tabIndex={0} key={index} cx={xFor(index)} cy={yFor(value)} r={selected ? 6 : 4} onClick={() => setSelectedPoint({ label: item.label, index })} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedPoint({ label: item.label, index }); }}><title>{labels[index]} · {item.label}: {Math.round(value * 10) / 10} {valueLabel}</title></circle>;
+                })}
               </g>
             );
           })}
         </svg>
       </div>
+      {selectedPoint && (() => {
+        const item = series.find((entry) => entry.label === selectedPoint.label);
+        const date = dates[selectedPoint.index] || labels[selectedPoint.index];
+        const value = item?.values[selectedPoint.index] || 0;
+        return <div className="trend-point-detail"><span className="material-symbols-outlined" aria-hidden="true">calendar_today</span><strong>{formatDateLabel(`${date}T00:00:00`)}</strong><span>{selectedPoint.label}</span><b>{Math.round(value * 10) / 10} {valueLabel}</b></div>;
+      })()}
     </div>
   );
 }
