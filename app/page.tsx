@@ -10,6 +10,7 @@ type Period = 'day' | 'week' | 'month';
 type TrendMode = 'workload' | 'event' | 'tag' | 'category' | 'habit';
 type TrendSeries = { label: string; color: string; values: number[] };
 type Category = { name: string; color: string };
+type HabitRepeatKind = 'daily' | 'weekly-flex' | 'weekdays' | 'interval';
 type MetricRecordDraft = { value: string; at: string };
 type EventDraft = {
   type: EventType;
@@ -21,6 +22,10 @@ type EventDraft = {
   workload: number;
   hasMetric: boolean;
   metricPrompt: string;
+  repeatKind: HabitRepeatKind;
+  repeatWeekdays: number[];
+  repeatIntervalDays: number;
+  repeatAnchorDate: string;
 };
 
 type TracEvent = {
@@ -39,6 +44,11 @@ type TracEvent = {
   completedAt?: string;
   totalMs: number;
   metricRecords: { value: number; at: string }[];
+  completionRecords?: string[];
+  repeatKind?: HabitRepeatKind;
+  repeatWeekdays?: number[];
+  repeatIntervalDays?: number;
+  repeatAnchorDate?: string;
 };
 
 type Segment = {
@@ -204,6 +214,10 @@ const emptyDraft: EventDraft = {
   workload: 3,
   hasMetric: false,
   metricPrompt: '',
+  repeatKind: 'daily',
+  repeatWeekdays: [1, 3, 5],
+  repeatIntervalDays: 2,
+  repeatAnchorDate: dateInputValue(new Date()),
 };
 
 function formatDuration(ms: number) {
@@ -269,7 +283,7 @@ function eventMetaLine(event: TracEvent) {
       ...(event.tags || []),
     ].filter(Boolean).join(' · ');
   }
-  return [event.category || '默认', ...(event.tags || [])].filter(Boolean).join(' · ');
+  return [event.type === 'habit' ? habitRepeatLabel(event) : '', event.category || '默认', ...(event.tags || [])].filter(Boolean).join(' · ');
 }
 
 function makeId(prefix: string) {
@@ -326,6 +340,84 @@ function isToday(date: string) {
   const target = new Date(date);
   const today = new Date();
   return target.getFullYear() === today.getFullYear() && target.getMonth() === today.getMonth() && target.getDate() === today.getDate();
+}
+
+function startOfWeek(date: Date) {
+  const result = new Date(date);
+  result.setHours(0, 0, 0, 0);
+  result.setDate(result.getDate() - ((result.getDay() + 6) % 7));
+  return result;
+}
+
+function calendarDayDifference(later: Date, earlier: Date) {
+  const laterDay = Date.UTC(later.getFullYear(), later.getMonth(), later.getDate());
+  const earlierDay = Date.UTC(earlier.getFullYear(), earlier.getMonth(), earlier.getDate());
+  return Math.floor((laterDay - earlierDay) / 86400000);
+}
+
+function habitCompletionsInRange(event: TracEvent, start: Date, end: Date) {
+  return (event.completionRecords || []).filter((record) => {
+    const time = new Date(record);
+    return time >= start && time < end;
+  }).length;
+}
+
+function habitDueToday(event: TracEvent, now = new Date()) {
+  if (event.type !== 'habit') return false;
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(todayStart);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const kind = event.repeatKind || 'daily';
+  if (kind === 'weekly-flex') return false;
+  if (kind === 'daily') return habitCompletionsInRange(event, todayStart, tomorrow) === 0;
+  if (kind === 'interval') {
+    const anchor = new Date(`${event.repeatAnchorDate || dateInputValue(todayStart)}T00:00:00`);
+    const interval = Math.max(1, event.repeatIntervalDays || 1);
+    return calendarDayDifference(todayStart, anchor) >= 0
+      && calendarDayDifference(todayStart, anchor) % interval === 0
+      && habitCompletionsInRange(event, todayStart, tomorrow) === 0;
+  }
+  const weekdays = event.repeatWeekdays?.length ? event.repeatWeekdays : [1, 3, 5];
+  if (!weekdays.includes(now.getDay())) return false;
+  const weekStart = startOfWeek(now);
+  const dueThroughToday = weekdays.filter((weekday) => ((weekday + 6) % 7) <= ((now.getDay() + 6) % 7)).length;
+  return habitCompletionsInRange(event, weekStart, tomorrow) < dueThroughToday;
+}
+
+function habitPendingThisWeek(event: TracEvent, now = new Date()) {
+  if (event.type !== 'habit') return false;
+  const weekStart = startOfWeek(now);
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const kind = event.repeatKind || 'daily';
+  const completed = habitCompletionsInRange(event, weekStart, todayStart);
+  if (kind === 'weekly-flex') {
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekEnd.getDate() + 7);
+    return habitCompletionsInRange(event, weekStart, weekEnd) === 0;
+  }
+  if (kind !== 'weekdays') return false;
+  const weekdays = event.repeatWeekdays?.length ? event.repeatWeekdays : [1, 3, 5];
+  const dueBeforeToday = weekdays.filter((weekday) => ((weekday + 6) % 7) < ((now.getDay() + 6) % 7)).length;
+  return completed < dueBeforeToday;
+}
+
+function habitRepeatLabel(event: TracEvent) {
+  const kind = event.repeatKind || 'daily';
+  if (kind === 'weekly-flex') return '每周不定时';
+  if (kind === 'interval') return `每隔 ${Math.max(1, event.repeatIntervalDays || 1)} 天`;
+  if (kind === 'weekdays') {
+    const labels = ['日', '一', '二', '三', '四', '五', '六'];
+    return `每周${(event.repeatWeekdays?.length ? event.repeatWeekdays : [1, 3, 5]).map((day) => labels[day]).join('、')}`;
+  }
+  return '每天';
+}
+
+function eventMarkedDone(event: TracEvent) {
+  if (event.type !== 'habit') return Boolean(event.completed);
+  const today = dateInputValue(new Date());
+  return (event.completionRecords || []).some((record) => dateInputValue(new Date(record)) === today);
 }
 
 function groupTotal<T extends string>(entries: { keys: T[]; ms: number }[]) {
@@ -405,6 +497,10 @@ function eventToDraft(event: TracEvent): EventDraft {
     workload: event.workload || 3,
     hasMetric: Boolean(event.hasMetric),
     metricPrompt: event.metricPrompt || '',
+    repeatKind: event.repeatKind || 'daily',
+    repeatWeekdays: event.repeatWeekdays?.length ? event.repeatWeekdays : [1, 3, 5],
+    repeatIntervalDays: Math.max(1, event.repeatIntervalDays || 2),
+    repeatAnchorDate: event.repeatAnchorDate || dateInputValue(new Date()),
   };
 }
 
@@ -450,6 +546,11 @@ export default function Home() {
       const savedEvents = (parsed.events?.length ? parsed.events : seedEvents).map((event) => ({
         ...event,
         importance: getEventImportance(event),
+        completionRecords: event.completionRecords || (event.type === 'habit' && event.completedAt ? [event.completedAt] : []),
+        repeatKind: event.type === 'habit' ? event.repeatKind || 'daily' : undefined,
+        repeatWeekdays: event.type === 'habit' ? event.repeatWeekdays?.length ? event.repeatWeekdays : [1, 3, 5] : undefined,
+        repeatIntervalDays: event.type === 'habit' ? Math.max(1, event.repeatIntervalDays || 2) : undefined,
+        repeatAnchorDate: event.type === 'habit' ? event.repeatAnchorDate || dateInputValue(new Date()) : undefined,
       }));
       setEvents(savedEvents);
       setSegments(shouldClearSeedTimeline ? savedSegments.filter((segment) => !seedSegmentIds.has(segment.id)) : savedSegments);
@@ -527,8 +628,11 @@ export default function Home() {
         return {
           ...event,
           totalMs: event.totalMs + durationMs,
-          completed: event.type !== 'daily' && completed ? true : event.completed,
-          completedAt: event.type !== 'daily' && completed ? endAt.toISOString() : event.completedAt,
+          completed: event.type === 'todo' && completed ? true : event.completed,
+          completedAt: event.type === 'todo' && completed ? endAt.toISOString() : event.completedAt,
+          completionRecords: event.type === 'habit' && completed
+            ? [...(event.completionRecords || []), endAt.toISOString()]
+            : event.completionRecords,
           metricRecords:
             event.type === 'habit' && event.hasMetric && metric !== undefined
               ? [...event.metricRecords, { value: metric, at: endAt.toISOString() }]
@@ -555,6 +659,7 @@ export default function Home() {
   function answerCompletion(done: boolean) {
     setCompletionOpen(false);
     if (activeEvent?.type === 'habit' && activeEvent.hasMetric) {
+      setPendingCompletion(done);
       setMetricValue('');
       setMetricOpen(true);
       return;
@@ -565,12 +670,12 @@ export default function Home() {
   function submitMetric(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = Number(metricValue);
-    prepareSwitch(false, Number.isFinite(value) ? value : undefined);
+    prepareSwitch(pendingCompletion, Number.isFinite(value) ? value : undefined);
     setMetricOpen(false);
   }
 
   function skipMetric() {
-    prepareSwitch(false);
+    prepareSwitch(pendingCompletion);
     setMetricOpen(false);
   }
 
@@ -702,6 +807,11 @@ export default function Home() {
                 workload: normalizedDraft.type === 'todo' ? normalizedDraft.workload : undefined,
                 hasMetric: normalizedDraft.type === 'habit' ? normalizedDraft.hasMetric : undefined,
                 metricPrompt: normalizedDraft.type === 'habit' && normalizedDraft.hasMetric ? normalizedDraft.metricPrompt.trim() : undefined,
+                repeatKind: normalizedDraft.type === 'habit' ? normalizedDraft.repeatKind : undefined,
+                repeatWeekdays: normalizedDraft.type === 'habit' && normalizedDraft.repeatKind === 'weekdays' ? normalizedDraft.repeatWeekdays : undefined,
+                repeatIntervalDays: normalizedDraft.type === 'habit' && normalizedDraft.repeatKind === 'interval' ? Math.max(1, normalizedDraft.repeatIntervalDays) : undefined,
+                repeatAnchorDate: normalizedDraft.type === 'habit' && normalizedDraft.repeatKind === 'interval' ? normalizedDraft.repeatAnchorDate : undefined,
+                completionRecords: normalizedDraft.type === 'habit' ? item.completionRecords || [] : undefined,
               }
             : item,
         ),
@@ -718,8 +828,13 @@ export default function Home() {
         workload: normalizedDraft.type === 'todo' ? normalizedDraft.workload : undefined,
         hasMetric: normalizedDraft.type === 'habit' ? normalizedDraft.hasMetric : undefined,
         metricPrompt: normalizedDraft.type === 'habit' && normalizedDraft.hasMetric ? normalizedDraft.metricPrompt.trim() : undefined,
+        repeatKind: normalizedDraft.type === 'habit' ? normalizedDraft.repeatKind : undefined,
+        repeatWeekdays: normalizedDraft.type === 'habit' && normalizedDraft.repeatKind === 'weekdays' ? normalizedDraft.repeatWeekdays : undefined,
+        repeatIntervalDays: normalizedDraft.type === 'habit' && normalizedDraft.repeatKind === 'interval' ? Math.max(1, normalizedDraft.repeatIntervalDays) : undefined,
+        repeatAnchorDate: normalizedDraft.type === 'habit' && normalizedDraft.repeatKind === 'interval' ? normalizedDraft.repeatAnchorDate : undefined,
         totalMs: 0,
         metricRecords: [],
+        completionRecords: [],
         completed: false,
       };
       setEvents((current) => [...current, nextEvent]);
@@ -729,11 +844,16 @@ export default function Home() {
 
   function toggleEventDone(eventId: string) {
     setEvents((current) =>
-      current.map((event) =>
-        event.id === eventId
-          ? { ...event, completed: !event.completed, completedAt: !event.completed ? new Date().toISOString() : undefined }
-          : event,
-      ),
+      current.map((event) => {
+        if (event.id !== eventId) return event;
+        if (event.type === 'habit') {
+          const today = dateInputValue(new Date());
+          const records = event.completionRecords || [];
+          const completedToday = records.some((record) => dateInputValue(new Date(record)) === today);
+          return { ...event, completionRecords: completedToday ? records.filter((record) => dateInputValue(new Date(record)) !== today) : [...records, new Date().toISOString()] };
+        }
+        return { ...event, completed: !event.completed, completedAt: !event.completed ? new Date().toISOString() : undefined };
+      }),
     );
   }
 
@@ -871,6 +991,7 @@ export default function Home() {
           onCustomEnd={openCustomEnd}
           onMorning={() => setSwitchOpen(true)}
           onSaveTimeline={saveTimeline}
+          onToggleDone={toggleEventDone}
         />
       )}
 
@@ -994,7 +1115,7 @@ export default function Home() {
   );
 }
 
-function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, categories, segments, onEnd, onCustomEnd, onMorning, onSaveTimeline }: {
+function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, categories, segments, onEnd, onCustomEnd, onMorning, onSaveTimeline, onToggleDone }: {
   activeEvent: TracEvent | null;
   activeStartedAt: string | null;
   elapsedMs: number;
@@ -1005,6 +1126,7 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, categorie
   onCustomEnd: () => void;
   onMorning: () => void;
   onSaveTimeline: (date: string, items: TimelineDraftItem[]) => void;
+  onToggleDone: (id: string) => void;
 }) {
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [selectedDate, setSelectedDate] = useState(() => dateInputValue(new Date()));
@@ -1020,6 +1142,11 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, categorie
   const [timelineDraft, setTimelineDraft] = useState<TimelineDraftItem[]>([]);
   const todayDate = dateInputValue(new Date());
   const selectedIsToday = selectedDate === todayDate;
+  const todayHabits = events.filter((event) => habitDueToday(event));
+  const weeklyHabits = events.filter((event) => habitPendingThisWeek(event));
+  const urgentTodos = events
+    .filter((event) => event.type === 'todo' && !event.completed && event.deadline && isUrgentDeadline(event.deadline))
+    .sort((a, b) => new Date(`${a.deadline}T00:00:00`).getTime() - new Date(`${b.deadline}T00:00:00`).getTime());
   function adjustTimelineZoom(delta: number) {
     setTimelineZoom((current) => Math.min(3.5, Math.max(1, Math.round((current + delta) * 4) / 4)));
   }
@@ -1093,6 +1220,12 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, categorie
         )}
       </section>
 
+      <section className="record-focus-panel" aria-label="今日重点事项">
+        <FocusGroup title="今日习惯" icon="today" empty="今日习惯已完成" events={todayHabits} categories={categories} onToggleDone={onToggleDone} />
+        <FocusGroup title="本周习惯" icon="date_range" empty="本周习惯已完成" events={weeklyHabits} categories={categories} onToggleDone={onToggleDone} />
+        <FocusGroup title="紧急待办" icon="priority_high" empty="暂无紧急待办" events={urgentTodos} categories={categories} onToggleDone={onToggleDone} />
+      </section>
+
       <section className="timeline wide" aria-label={`${selectedIsToday ? '今日' : formatDateLabel(`${selectedDate}T00:00:00`)}轨迹`}>
         <div className="section-head">
           <div>
@@ -1160,6 +1293,38 @@ function RecordPage({ activeEvent, activeStartedAt, elapsedMs, events, categorie
         }}
         onClose={() => setTimelineEditorOpen(false)}
       />
+    </div>
+  );
+}
+
+function FocusGroup({ title, icon, empty, events, categories, onToggleDone }: {
+  title: string;
+  icon: string;
+  empty: string;
+  events: TracEvent[];
+  categories: Category[];
+  onToggleDone: (id: string) => void;
+}) {
+  return (
+    <div className="focus-group">
+      <div className="focus-group-head">
+        <span className="material-symbols-outlined" aria-hidden="true">{icon}</span>
+        <strong>{title}</strong>
+        <span>{events.length}</span>
+      </div>
+      <div className="focus-list">
+        {events.length === 0 ? <p>{empty}</p> : events.map((event) => (
+          <article className="focus-item" style={{ '--category-color': categoryColor(categories, event.category) } as React.CSSProperties} key={event.id}>
+            <span>
+              <strong>{event.name}</strong>
+              <small>{event.type === 'todo' && event.deadline ? `DDL ${formatDateLabel(`${event.deadline}T00:00:00`)}` : habitRepeatLabel(event)}</small>
+            </span>
+            <button onClick={() => onToggleDone(event.id)} aria-label={`完成 ${event.name}`}>
+              <span className="material-symbols-outlined" aria-hidden="true">check_box_outline_blank</span>
+            </button>
+          </article>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1666,8 +1831,8 @@ function EventsPage({ events, categories, activeEventId, onAdd, onEdit, onEditMe
                             <span className="material-symbols-outlined" aria-hidden="true">delete</span>
                           </button>
                           {event.type !== 'daily' && (
-                            <button className={`icon-only event-tool completion-tool ${event.completed ? 'done' : ''}`} onClick={() => onToggleDone(event.id)} aria-label={`${event.completed ? '取消完成' : '完成'} ${event.name}`}>
-                              <span className="material-symbols-outlined" aria-hidden="true">{event.completed ? 'check_box' : 'check_box_outline_blank'}</span>
+                            <button className={`icon-only event-tool completion-tool ${eventMarkedDone(event) ? 'done' : ''}`} onClick={() => onToggleDone(event.id)} aria-label={`${eventMarkedDone(event) ? '取消完成' : '完成'} ${event.name}`}>
+                              <span className="material-symbols-outlined" aria-hidden="true">{eventMarkedDone(event) ? 'check_box' : 'check_box_outline_blank'}</span>
                             </button>
                           )}
                         </span>
@@ -1865,6 +2030,12 @@ function EventEditorModal({ open, draft, setDraft, editing, categories, tags, on
     setDraft({ ...draft, tags: draft.tags.includes(tag) ? draft.tags.filter((item) => item !== tag) : [...draft.tags, tag] });
   }
 
+  function toggleWeekday(day: number) {
+    const selected = draft.repeatWeekdays.includes(day);
+    if (selected && draft.repeatWeekdays.length === 1) return;
+    setDraft({ ...draft, repeatWeekdays: selected ? draft.repeatWeekdays.filter((item) => item !== day) : [...draft.repeatWeekdays, day].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)) });
+  }
+
   return (
     <Dialog open={open} title={editing ? '编辑事件' : '添加事件'} icon={editing ? 'edit_note' : 'add_task'} onClose={onClose} wide>
       <form className="event-form" onSubmit={onSubmit}>
@@ -1927,6 +2098,37 @@ function EventEditorModal({ open, draft, setDraft, editing, categories, tags, on
         )}
         {draft.type === 'habit' && (
           <>
+            <label>
+              重复周期
+              <select value={draft.repeatKind} onChange={(event) => setDraft({ ...draft, repeatKind: event.target.value as HabitRepeatKind })}>
+                <option value="daily">每天</option>
+                <option value="weekly-flex">每周不定时</option>
+                <option value="weekdays">每周指定日期</option>
+                <option value="interval">每隔固定时间</option>
+              </select>
+            </label>
+            {draft.repeatKind === 'weekdays' && (
+              <div className="field-block">
+                <span>每周执行日</span>
+                <div className="weekday-picker">
+                  {[['一', 1], ['二', 2], ['三', 3], ['四', 4], ['五', 5], ['六', 6], ['日', 0]].map(([label, day]) => (
+                    <button type="button" className={draft.repeatWeekdays.includes(day as number) ? 'selected' : ''} key={day} onClick={() => toggleWeekday(day as number)}>{label}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {draft.repeatKind === 'interval' && (
+              <div className="repeat-interval-fields">
+                <label>
+                  间隔天数
+                  <input type="number" min="1" max="365" value={draft.repeatIntervalDays} onChange={(event) => setDraft({ ...draft, repeatIntervalDays: Math.max(1, Number(event.target.value) || 1) })} />
+                </label>
+                <label>
+                  起始日期
+                  <input type="date" value={draft.repeatAnchorDate} onChange={(event) => setDraft({ ...draft, repeatAnchorDate: event.target.value })} />
+                </label>
+              </div>
+            )}
             <label className="toggle-line">
               <input type="checkbox" checked={draft.hasMetric} onChange={(event) => setDraft({ ...draft, hasMetric: event.target.checked })} />
               记录数字指标
