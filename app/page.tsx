@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { DataSettings } from './DataSettings';
 
 type AppPage = 'record' | 'events' | 'stats';
 type EventType = 'daily' | 'todo' | 'habit';
@@ -969,6 +970,12 @@ export default function Home() {
           <h1>Trac</h1>
           <p className="brand-subtitle">校园生活时间记录</p>
         </div>
+        <DataSettings state={{events,segments,categories,tags,activeEventId,activeStartedAt,trendMode}} onImport={value=>{
+          const imported=value as PersistedState;setEvents(imported.events);setSegments(imported.segments);
+          setActiveEventId(imported.activeEventId);setActiveStartedAt(imported.activeStartedAt);
+          setCategories(imported.categories?.length?normalizeCategories(imported.categories,imported.events):deriveCategories(imported.events));
+          setTags(imported.tags??deriveTags(imported.events));setTrendMode(imported.trendMode??'event');
+        }}/>
         <nav className="page-tabs" aria-label="页面导航">
           {(['record', 'events', 'stats'] as AppPage[]).map((item) => (
             <button className={page === item ? 'selected' : ''} key={item} onClick={() => setPage(item)}>
