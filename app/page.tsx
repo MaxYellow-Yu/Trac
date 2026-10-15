@@ -1,4 +1,5 @@
 'use client';
+import {Dialog} from './Dialog';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { DataSettings } from './DataSettings';
@@ -2207,30 +2208,6 @@ function ListEditorModal({ kind, categories, tags, input, setInput, onAdd, onRem
   );
 }
 
-function Dialog({ open, title, icon, onClose, children, wide = false }: {
-  open: boolean;
-  title: string;
-  icon: string;
-  onClose: () => void;
-  children: React.ReactNode;
-  wide?: boolean;
-}) {
-  if (!open) return null;
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <section className={`modal-card ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
-        <div className="modal-head">
-          <span className="dialog-icon" aria-hidden="true"><span className="material-symbols-outlined">{icon}</span></span>
-          <h2>{title}</h2>
-          <button className="icon-only" onClick={onClose} aria-label="关闭弹窗">
-            <span className="material-symbols-outlined" aria-hidden="true">close</span>
-          </button>
-        </div>
-        {children}
-      </section>
-    </div>
-  );
-}
 
 function TrendChart({ labels, dates, series, valueLabel }: { labels: string[]; dates: string[]; series: TrendSeries[]; valueLabel: string }) {
   const [selectedPoint, setSelectedPoint] = useState<{ label: string; index: number } | null>(null);
